@@ -2363,7 +2363,7 @@ function ImportModal({onImport, onClose}) {
   function handleImportClick() {
     if (!merged) return;
     var all = merged.matched.concat(merged.ibmOnly).concat(merged.clarityOnly);
-    onImport(all, merged);
+    onImport(all, merged, clarityRecs);
     onClose();
   }
 
@@ -3555,11 +3555,14 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
   const[mgrDept,setMgrDept]=useState(session.dept||"");
   const[mgrPhone,setMgrPhone]=useState("");
   const[mgrSaved,setMgrSaved]=useState(false);
+  const[savedClarityRecs,setSavedClarityRecs]=useState([]); // persisted after import for Re-link dropdown
 
   const periodLabel=(PERIODS.find(p=>p.value===selPeriod)||{label:selPeriod}).label;
   const monthLabel=`${selMonth} ${selYear}`;
   const showToast=(msg,type="success")=>{setToast({msg,type});setTimeout(()=>setToast(null),4000);};
-  const handleImport=function(data, mergedInfo) {
+  const handleImport=function(data, mergedInfo, clarityRecsFromImport) {
+    // Save clarity records for use in Re-link dropdown outside import modal
+    if (clarityRecsFromImport) setSavedClarityRecs(clarityRecsFromImport);
     // Map imported records to user shape expected by the app
     var mapped = data.map(function(r) {
       return {
@@ -4074,7 +4077,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
                                     });
                                     // Also update users so detail panel stays valid
                                     if (val) {
-                                      var newClarityRec = clarityRecs.find(function(c){ return c.normalizedName === val; });
+                                      var newClarityRec = savedClarityRecs.find(function(c){ return c.normalizedName === val; });
                                       if (newClarityRec) {
                                         setUsers(function(prev){ return prev.map(function(pu){
                                           if (pu.id !== u.id) return pu;
@@ -4096,7 +4099,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
                                   }}
                                   style={{fontSize:11,padding:"3px 6px",border:"1px solid "+IBM.orange40,outline:"none",background:"#fff",color:IBM.gray100,maxWidth:180}}>
                                   <option value="">-- None (IBM only) --</option>
-                                  {clarityRecs.map(function(c){
+                                  {savedClarityRecs.map(function(c){
                                     var score = fuzzyMatchScore(u.name, c.rawName);
                                     var label = score >= 0.4 ? c.rawName + " (" + Math.round(score*100) + "%)" : c.rawName;
                                     return <option key={c.normalizedName} value={c.normalizedName}>{label}</option>;
