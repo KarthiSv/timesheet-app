@@ -262,7 +262,7 @@ function resetLoginAttempts(username) {
 }
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
-function getSeverity(u){const e=Number(u.entered)||0,s=Number(u.scheduled)||0;if(s===0||e===s)return 0;if(e===0)return 4;const g=((s-e)/s)*100;if(g<=10)return 1;if(g<=30)return 2;if(g<=60)return 3;return 4;}
+function getSeverity(u){const e=Number(u.entered)||0,s=Number(u.scheduled)||0;if(s===0||e>=s)return 0;if(e===0)return 4;const g=((s-e)/s)*100;if(g<=10)return 1;if(g<=30)return 2;if(g<=60)return 3;return 4;}
 const SEV={0:{label:"Complete",color:IBM.green50,bg:IBM.green10,glow:"#24a14855"},1:{label:"Low",color:"#0e6027",bg:"#d1f5d9",glow:"#24a14833"},2:{label:"Medium",color:"#8e6a00",bg:IBM.yellow10,glow:"#f1c21b44"},3:{label:"High",color:IBM.orange40,bg:IBM.orange10,glow:"#ff832b44"},4:{label:"Critical",color:IBM.red60,bg:IBM.red10,glow:"#da1e2855"}};
 function getStatus(u){
   var e=Number(u.entered)||0, s=Number(u.scheduled)||0;
@@ -1909,16 +1909,29 @@ function parseClarityFile(wb) {
 
   function periodToMonthKey(periodStr) {
     if (!periodStr) return null;
+    var pl = periodStr.toLowerCase();
+    var MFULL_P_L = ["january","february","march","april","may","june","july","august","september","october","november","december"];
+    var MABBR_P   = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
+    // Try numeric format: DD/MM/YYYY or MM/DD/YYYY
     var dateMatch = periodStr.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
     if (dateMatch) {
       var pMonth = parseInt(dateMatch[1]), pYear = parseInt(dateMatch[3]);
       if (pMonth >= 1 && pMonth <= 12) return MFULL_P[pMonth-1] + "-" + pYear;
     }
+    // Try DD-MON-YYYY format e.g. "01-MAR-2026" or "16-MAR-2026 to 31-MAR-2026"
+    var monMatch = periodStr.match(/\d{1,2}[\/\-]([A-Za-z]{3})[\/\-](\d{4})/);
+    if (monMatch) {
+      var abbr = monMatch[1].toLowerCase();
+      var mi2 = MABBR_P.indexOf(abbr);
+      if (mi2 !== -1) return MFULL_P[mi2] + "-" + monMatch[2];
+    }
+    // Try year + full month name or abbreviation anywhere in string
     var yearM = periodStr.match(/(\d{4})/);
     if (yearM) {
-      var py = parseInt(yearM[1]), pl = periodStr.toLowerCase();
-      for (var mi = 0; mi < MFULL_P.length; mi++) {
-        if (pl.indexOf(MFULL_P[mi].toLowerCase()) !== -1) return MFULL_P[mi] + "-" + py;
+      var py = parseInt(yearM[1]);
+      for (var mi = 0; mi < MFULL_P_L.length; mi++) {
+        if (pl.indexOf(MFULL_P_L[mi]) !== -1) return MFULL_P[mi] + "-" + py;
+        if (pl.indexOf(MABBR_P[mi]) !== -1) return MFULL_P[mi] + "-" + py;
       }
     }
     return null;
@@ -2844,10 +2857,15 @@ function NameMatchPanel({users, setUsers, onClose}) {
   if (selIBM && !ibmRec)     { setTimeout(function(){ setSelIBM(null); }, 0); }
   if (selClarity && !clarityRec) { setTimeout(function(){ setSelClarity(null); }, 0); }
 
-  // Compute fuzzy candidates for selected IBM record
-  var clarityPool = ibmTab === "matched"
-    ? allClarityForRelink.filter(function(c){ return c.id !== selIBM; }) // exclude self
+  var ibmTab_isMatched = ibmTab === "matched";
+
+  // For Fix Auto-matched: show ALL users as potential relink targets (not just Clarity-only)
+  // This is needed because after import, most Clarity records are already "Both"
+  var clarityPool = ibmTab_isMatched
+    ? users.filter(function(c){ return c.id !== selIBM; }) // all users except self
     : clarityOnly;
+
+  const[claritySearch, setClaritySearch] = useState("");
 
   var candidates = useMemo(function(){
     if (!ibmRec || !ibmRec.name) {
@@ -2860,14 +2878,15 @@ function NameMatchPanel({users, setUsers, onClose}) {
     return scored;
   }, [selIBM, ibmTab, users.length]);
 
-  // Filter clarity list
+  // Filter clarity list — use claritySearch for right panel, search for left
   var filteredClarity = useMemo(function(){
-    var q = search.toLowerCase();
+    var q = claritySearch.toLowerCase();
     if (!q) return candidates;
     return candidates.filter(function(x){
-      return x.u && x.u.name && (x.u.clarityName||x.u.name).toLowerCase().indexOf(q) !== -1;
+      var name = x.u && (x.u.clarityName || x.u.name) || "";
+      return name.toLowerCase().indexOf(q) !== -1;
     });
-  }, [candidates, search]);
+  }, [candidates, claritySearch]);
 
   // Filter IBM list
   var ibmFiltered = useMemo(function(){
@@ -3008,7 +3027,7 @@ function NameMatchPanel({users, setUsers, onClose}) {
         <div style={{background:IBM.gray90,padding:"0 24px",display:"flex",gap:0,flexShrink:0}}>
           {[["unmatched","🔴 Unmatched IBM ("+ibmOnly.length+")"],["matched","⚠ Fix Auto-matched ("+bothMatched.length+")"]].map(function(t){
             return (
-              <button key={t[0]} onClick={function(){ setIbmTab(t[0]); setSelIBM(null); setSelClarity(null); setSearch(""); }}
+              <button key={t[0]} onClick={function(){ setIbmTab(t[0]); setSelIBM(null); setSelClarity(null); setSearch(""); setClaritySearch(""); }}
                 style={{padding:"9px 18px",background:"none",border:"none",borderBottom:ibmTab===t[0]?"2px solid "+IBM.orange40:"2px solid transparent",
                   color:ibmTab===t[0]?"#fff":IBM.gray50,cursor:"pointer",fontSize:12,fontWeight:ibmTab===t[0]?700:400}}>
                 {t[1]}
@@ -3048,7 +3067,7 @@ function NameMatchPanel({users, setUsers, onClose}) {
                 var isQueued   = linked.some(function(l){ return l.ibmId === u.id; });
                 return (
                   <div key={u.id}
-                    onClick={function(){ if (!isQueued || ibmTab==="matched") { setSelIBM(isSelected ? null : u.id); setSelClarity(null); } }}
+                    onClick={function(){ if (!isQueued || ibmTab==="matched") { setSelIBM(isSelected ? null : u.id); setSelClarity(null); setClaritySearch(""); } }}
                     style={{padding:"11px 16px",borderBottom:"1px solid "+IBM.gray20,cursor:isQueued&&ibmTab==="unmatched"?"default":"pointer",
                       background:isQueued?IBM.green10:isSelected?IBM.blue10:"#fff",
                       borderLeft:isQueued?"3px solid "+IBM.green50:isSelected?"3px solid "+IBM.blue60:"3px solid transparent",
@@ -3094,13 +3113,19 @@ function NameMatchPanel({users, setUsers, onClose}) {
           {/* RIGHT: Clarity Only */}
           <div style={{display:"flex",flexDirection:"column",overflow:"hidden"}}>
             <div style={{background:IBM.purple10,borderBottom:"1px solid #d4bbff",padding:"10px 16px",flexShrink:0}}>
-              <div style={{fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.07em",color:IBM.purple60,marginBottom:2}}>
-                {ibmTab==="unmatched" ? "Clarity Only — "+clarityOnly.length+" record"+(clarityOnly.length!==1?"s":"") : "All Clarity Names — "+clarityPool.length+" available"}
+              <div style={{fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.07em",color:IBM.purple60,marginBottom:6}}>
+                {ibmTab_isMatched ? "All Users — "+clarityPool.length+" available" : "Clarity Only — "+clarityOnly.length+" record"+(clarityOnly.length!==1?"s":"")}
               </div>
               {!selIBM
                 ? <div style={{fontSize:11,color:IBM.gray50}}>&#8592; Select an IBM record first</div>
-                : <div style={{fontSize:11,color:IBM.purple60}}>Best matches for <b>{ibmRec ? ibmRec.name : ""}</b></div>
+                : <div style={{fontSize:11,color:IBM.purple60,marginBottom:6}}>Best matches for <b>{ibmRec ? ibmRec.name : ""}</b></div>
               }
+              <input
+                value={claritySearch}
+                onChange={function(e){ setClaritySearch(e.target.value); }}
+                placeholder="Search Clarity names…"
+                style={{width:"100%",padding:"6px 10px",border:"1px solid #d4bbff",fontSize:12,outline:"none",background:"#fff",boxSizing:"border-box"}}
+              />
             </div>
             <div style={{flex:1,overflowY:"auto"}}>
               {clarityOnly.length === 0 && (
@@ -3124,7 +3149,10 @@ function NameMatchPanel({users, setUsers, onClose}) {
                       opacity: alreadyLinked ? 0.5 : 1}}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
                       <div style={{flex:1,minWidth:0}}>
-                        <div style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:IBM.gray100}}>{c.name}</div>
+                        <div style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:IBM.gray100}}>{c.clarityName || c.name}</div>
+                        {c.clarityName && c.clarityName !== c.name && (
+                          <div style={{fontSize:11,color:IBM.gray50,marginTop:1}}>IBM: {c.name}</div>
+                        )}
                         <div style={{fontSize:11,color:IBM.gray60,marginTop:2,display:"flex",gap:8,flexWrap:"wrap"}}>
                           {c.entered > 0 && <span>{c.entered}h actual</span>}
                           {c.resourceManager && c.resourceManager !== "—" && <span>{c.resourceManager}</span>}
@@ -3531,7 +3559,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
   const[selPeriod,setSelPeriod]=useState("WM");
   const[isImported,setIsImported]=useState(false);
   const[importedMonths,setImportedMonths]=useState([]); // e.g. ["February-2026","March-2026"]
-  const[showAllMonths,setShowAllMonths]=useState(false); // false=filter by selMonth+selYear, true=all months
+  const[showAllMonths,setShowAllMonths]=useState(true); // default to All Months view
   const[showImport,setShowImport]=useState(false);
   const[filterStatus,setFilterStatus]=useState("all");
   const[sortMode,setSortMode]=useState("severity-desc");
@@ -3567,6 +3595,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
     var mapped = data.map(function(r) {
       return {
         id: r.id || r.normalizedName,
+        normalizedName: r.normalizedName || r.id || "",
         name: r.name,
         clarityName: r.clarityName || null,
         email: r.email || "",
@@ -3687,7 +3716,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
     });
     if(sortMode==="severity-desc") l=l.slice().sort(function(a,b){return getSeverity(b)-getSeverity(a);});
     else if(sortMode==="severity-asc") l=l.slice().sort(function(a,b){return getSeverity(a)-getSeverity(b);});
-    else if(sortMode==="name") l=l.slice().sort(function(a,b){return a.name.localeCompare(b.name);});
+    else if(sortMode==="name") l=l.slice().sort(function(a,b){return (a.name||"").localeCompare(b.name||"");});
     else if(sortMode==="hours-gap") l=l.slice().sort(function(a,b){return (Number(b.scheduled)-Number(b.entered))-(Number(a.scheduled)-Number(a.entered));});
     return l;
   },[users,filterStatus,filterSource,search,filterRM,filterWBS,sortMode,showAllMonths,selMonth,selYear]);
@@ -3760,52 +3789,103 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
 
       {/* HEADER BAND */}
       {(activeTab==="dashboard"||activeTab==="records")&&(
-        <div className="hdr-band" style={{background:IBM.blue60,color:"#fff",padding:"18px 28px"}}>
-          <div style={{display:"flex",alignItems:"flex-end",justifyContent:"space-between",flexWrap:"wrap",gap:12}}>
+        <div className="hdr-band" style={{background:IBM.blue60,color:"#fff",padding:"20px 28px 16px"}}>
+          <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",flexWrap:"wrap",gap:16}}>
+            {/* Left: Title */}
             <div>
-              <h1 style={{fontSize:22,fontWeight:300,margin:0}}>{activeTab==="dashboard"?"Overview":"Employee Records"}</h1>
-              <p style={{fontSize:13,color:"#a6c8ff",marginTop:4}}>
-                {showAllMonths ? "All Months Combined" : selMonth + " " + selYear}
-                {importedMonths.length>0 && (
-                  <span style={{marginLeft:6,opacity:0.7,fontSize:12}}>
-                    {importedMonths.length} imported month{importedMonths.length>1?"s":""} loaded
+              <h1 style={{fontSize:24,fontWeight:300,margin:0,letterSpacing:"-0.3px"}}>
+                {activeTab==="dashboard"?"Overview":"Employee Records"}
+              </h1>
+              <p style={{fontSize:14,color:"#a6c8ff",marginTop:5,marginBottom:0}}>
+                {showAllMonths ? "Showing all imported data" : selMonth+" "+selYear+" · "+((PERIODS.find(p=>p.value===selPeriod)||{}).label||selPeriod)}
+                {importedMonths.length>0&&(
+                  <span style={{marginLeft:8,opacity:0.75,fontSize:12}}>
+                    · {importedMonths.length} month{importedMonths.length>1?"s":""} imported
                   </span>
                 )}
               </p>
             </div>
-            <div style={{display:"flex",gap:10,alignItems:"flex-end",flexWrap:"wrap"}}>
+
+            {/* Right: Unified filter controls */}
+            <div style={{display:"flex",gap:8,alignItems:"flex-end",flexWrap:"wrap"}}>
+
+              {/* Single unified Month picker — shows "All Months" or a specific month */}
               <div>
-                <label style={{fontSize:10,color:"#a6c8ff",textTransform:"uppercase",letterSpacing:"0.07em",display:"block",marginBottom:4}}>Year</label>
-                <Sel dark value={selYear} onChange={function(e){
-                  setSelYear(Number(e.target.value));
-                }} options={YEARS}/>
+                <label style={{fontSize:11,color:"#a6c8ff",textTransform:"uppercase",letterSpacing:"0.08em",display:"block",marginBottom:5,fontWeight:600}}>
+                  Filter by Month
+                </label>
+                <select
+                  value={showAllMonths ? "all" : selMonth+"-"+selYear}
+                  onChange={function(e){
+                    var val = e.target.value;
+                    if (val === "all") {
+                      setShowAllMonths(true);
+                    } else {
+                      var p = val.split("-");
+                      if (MONTH_NAMES.indexOf(p[0]) !== -1) setSelMonth(p[0]);
+                      if (p[1]) setSelYear(Number(p[1]));
+                      setShowAllMonths(false);
+                    }
+                  }}
+                  style={{
+                    padding:"9px 36px 9px 14px",
+                    background:"rgba(255,255,255,0.15)",
+                    border:"1px solid rgba(255,255,255,0.4)",
+                    color:"#fff",
+                    fontSize:14,
+                    fontWeight:600,
+                    cursor:"pointer",
+                    outline:"none",
+                    appearance:"none",
+                    WebkitAppearance:"none",
+                    backgroundImage:"url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23fff' stroke-width='1.5' fill='none'/%3E%3C/svg%3E\")",
+                    backgroundRepeat:"no-repeat",
+                    backgroundPosition:"right 12px center",
+                    minWidth:180,
+                  }}>
+                  <option value="all" style={{background:IBM.gray100,color:"#fff"}}>📅 All Months</option>
+                  {importedMonths.length > 0
+                    ? importedMonths.map(function(m){
+                        var p = m.split("-");
+                        var label = (p[0]||m) + (p[1] ? " "+p[1] : "");
+                        return <option key={m} value={m} style={{background:IBM.gray100,color:"#fff"}}>{label}</option>;
+                      })
+                    : MONTH_NAMES.map(function(mn){
+                        return <option key={mn} value={mn+"-"+selYear} style={{background:IBM.gray100,color:"#fff"}}>{mn+" "+selYear}</option>;
+                      })
+                  }
+                </select>
               </div>
-              <div>
-                <label style={{fontSize:10,color:"#a6c8ff",textTransform:"uppercase",letterSpacing:"0.07em",display:"block",marginBottom:4}}>Month</label>
-                <Sel dark value={selMonth} onChange={function(e){
-                  setSelMonth(e.target.value);
-                }} options={MONTH_NAMES}/>
-              </div>
-              <div><label style={{fontSize:10,color:"#a6c8ff",textTransform:"uppercase",letterSpacing:"0.07em",display:"block",marginBottom:4}}>Period</label><Sel dark value={selPeriod} onChange={e=>setSelPeriod(e.target.value)} options={PERIODS.map(p=>({label:p.label,value:p.value}))}/></div>
-              <div style={{display:"flex",flexDirection:"column",justifyContent:"flex-end"}}>
-                <button onClick={function(){setShowAllMonths(function(v){return !v;});}}
-                  style={{padding:"7px 14px",background:showAllMonths?"rgba(255,255,255,0.25)":"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.4)",color:"#fff",cursor:"pointer",fontSize:11,fontWeight:600,whiteSpace:"nowrap"}}>
-                  {showAllMonths ? "📅 Showing All" : "Show All Months"}
-                </button>
-              </div>
-              {importedMonths.length>0&&(
+
+              {/* Period selector — only relevant when a specific month is selected */}
+              {!showAllMonths && (
                 <div>
-                  <label style={{fontSize:10,color:"#a6c8ff",textTransform:"uppercase",letterSpacing:"0.07em",display:"block",marginBottom:4}}>Imported Data</label>
-                  <Sel dark value={selMonth+"-"+selYear} onChange={function(e){
-                      if(e.target.value==="All"){ setShowAllMonths(true); }
-                      else {
-                        var p=e.target.value.split("-");
-                        if(MONTH_NAMES.indexOf(p[0])!==-1) setSelMonth(p[0]);
-                        if(p[1]) setSelYear(Number(p[1]));
-                        setShowAllMonths(false);
-                      }
-                    }}
-                    options={[{label:"All Months",value:"All"}].concat(importedMonths.map(function(m){ var p=m.split("-"); return {label:(p[0]||m)+(p[1]?" "+p[1]:""),value:m}; }))}/>
+                  <label style={{fontSize:11,color:"#a6c8ff",textTransform:"uppercase",letterSpacing:"0.08em",display:"block",marginBottom:5,fontWeight:600}}>
+                    Period
+                  </label>
+                  <select
+                    value={selPeriod}
+                    onChange={function(e){ setSelPeriod(e.target.value); }}
+                    style={{
+                      padding:"9px 36px 9px 14px",
+                      background:"rgba(255,255,255,0.15)",
+                      border:"1px solid rgba(255,255,255,0.4)",
+                      color:"#fff",
+                      fontSize:14,
+                      fontWeight:600,
+                      cursor:"pointer",
+                      outline:"none",
+                      appearance:"none",
+                      WebkitAppearance:"none",
+                      backgroundImage:"url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23fff' stroke-width='1.5' fill='none'/%3E%3C/svg%3E\")",
+                      backgroundRepeat:"no-repeat",
+                      backgroundPosition:"right 12px center",
+                      minWidth:160,
+                    }}>
+                    {PERIODS.map(function(p){
+                      return <option key={p.value} value={p.value} style={{background:IBM.gray100,color:"#fff"}}>{p.label}</option>;
+                    })}
+                  </select>
                 </div>
               )}
             </div>
@@ -3857,7 +3937,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
               ];
             })()}
           </div>
-          <div className="dash-stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))",gap:1,background:IBM.gray20,margin:"0 28px",border:"1px solid "+IBM.gray20}}>
+          <div className="dash-stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:1,background:IBM.gray20,margin:"0 28px",border:"1px solid "+IBM.gray20}}>
             {(function(){
               var matchedCount=users.filter(function(u){return u.dataSource==="Both";}).length;
               var ibmOnlyCount=users.filter(function(u){return u.dataSource==="IBM only";}).length;
@@ -3877,7 +3957,10 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
                 {l:"Clarity Only",v:clarityOnlyCount,c:IBM.purple60}
               ];
               return cards.map(function(card){
-                return <div key={card.l} style={{background:"#fff",padding:"12px 16px",borderTop:"3px solid "+card.c}}><div style={{fontSize:22,fontWeight:300,color:card.c}}>{card.v}</div><div style={{fontSize:10,color:IBM.gray70,marginTop:3,textTransform:"uppercase",letterSpacing:"0.08em"}}>{card.l}</div></div>;
+                return <div key={card.l} style={{background:"#fff",padding:"16px 20px",borderTop:"3px solid "+card.c}}>
+                  <div style={{fontSize:28,fontWeight:300,color:card.c,letterSpacing:"-0.5px"}}>{card.v}</div>
+                  <div style={{fontSize:11,color:IBM.gray60,marginTop:5,textTransform:"uppercase",letterSpacing:"0.09em",fontWeight:500}}>{card.l}</div>
+                </div>;
               });
             })()}
           </div>
