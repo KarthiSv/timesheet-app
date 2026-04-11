@@ -2818,40 +2818,51 @@ function BulkBar({selected,total,onSelectAll,onClearAll,onBulkNotif,onSendAll,on
 // ─── NAME MATCH PANEL (post-import fix) ──────────────────────────────────────
 function NameMatchPanel({users, setUsers, onClose}) {
   var ibmOnly     = users.filter(function(u){ return u.dataSource === "IBM only"; });
+  // Also include already-matched Both records so user can fix incorrect auto-matches
+  var bothMatched = users.filter(function(u){ return u.dataSource === "Both"; });
   var clarityOnly = users.filter(function(u){ return u.dataSource === "Clarity only"; });
+  // All clarity records available for relinking (both unmatched and already matched)
+  var allClarityForRelink = users.filter(function(u){ return u.dataSource === "Clarity only" || u.dataSource === "Both"; });
 
   const[search,    setSearch]    = useState("");
+  const[ibmTab,    setIbmTab]    = useState("unmatched"); // "unmatched" | "matched"
   const[selIBM,    setSelIBM]    = useState(null);
   const[selClarity,setSelClarity]= useState(null);
   const[linked,    setLinked]    = useState([]);
   const[applyDone, setApplyDone] = useState(false);
 
+  var activeIbmList = ibmTab === "unmatched" ? ibmOnly : bothMatched;
+
   // Always guard: ibmRec/clarityRec could be undefined if id no longer in list
-  var ibmRec     = selIBM     ? (ibmOnly.find(function(u){ return u.id === selIBM; })     || null) : null;
-  var clarityRec = selClarity ? (clarityOnly.find(function(u){ return u.id === selClarity; }) || null) : null;
+  var ibmRec     = selIBM     ? (users.find(function(u){ return u.id === selIBM; })     || null) : null;
+  var clarityRec = selClarity ? (users.find(function(u){ return u.id === selClarity; }) || null) : null;
 
   // If selection became stale (record removed after apply), clear it
   if (selIBM && !ibmRec)     { setTimeout(function(){ setSelIBM(null); }, 0); }
   if (selClarity && !clarityRec) { setTimeout(function(){ setSelClarity(null); }, 0); }
 
-  // Compute fuzzy candidates for selected IBM record — guard ibmRec
+  // Compute fuzzy candidates for selected IBM record
+  var clarityPool = ibmTab === "matched"
+    ? allClarityForRelink.filter(function(c){ return c.id !== selIBM; }) // exclude self
+    : clarityOnly;
+
   var candidates = useMemo(function(){
     if (!ibmRec || !ibmRec.name) {
-      return clarityOnly.map(function(c){ return { u:c, score:0 }; });
+      return clarityPool.map(function(c){ return { u:c, score:0 }; });
     }
-    var scored = clarityOnly.map(function(c){
-      return { u:c, score: fuzzyMatchScore(ibmRec.name, c.name) };
+    var scored = clarityPool.map(function(c){
+      return { u:c, score: fuzzyMatchScore(ibmRec.name, c.clarityName || c.name) };
     });
     scored.sort(function(a,b){ return b.score - a.score; });
     return scored;
-  }, [selIBM, users.length, clarityOnly.length]);
+  }, [selIBM, ibmTab, users.length]);
 
   // Filter clarity list
   var filteredClarity = useMemo(function(){
     var q = search.toLowerCase();
     if (!q) return candidates;
     return candidates.filter(function(x){
-      return x.u && x.u.name && x.u.name.toLowerCase().indexOf(q) !== -1;
+      return x.u && x.u.name && (x.u.clarityName||x.u.name).toLowerCase().indexOf(q) !== -1;
     });
   }, [candidates, search]);
 
@@ -2860,18 +2871,18 @@ function NameMatchPanel({users, setUsers, onClose}) {
     var q = search.toLowerCase();
     var linkedIds = {};
     linked.forEach(function(l){ linkedIds[l.ibmId] = true; });
-    return ibmOnly.filter(function(u){
+    return activeIbmList.filter(function(u){
       if (!u || !u.id) return false;
-      if (linkedIds[u.id]) return false;
+      if (ibmTab === "unmatched" && linkedIds[u.id]) return false;
       if (!q) return true;
       return u.name && u.name.toLowerCase().indexOf(q) !== -1;
     });
-  }, [ibmOnly.length, users.length, linked.length, search]);
+  }, [activeIbmList, ibmTab, linked.length, search]);
 
   function addLink() {
     if (!selIBM || !selClarity) return;
     var newLinks = linked.filter(function(l){ return l.ibmId !== selIBM && l.clarityId !== selClarity; });
-    newLinks.push({ ibmId: selIBM, clarityId: selClarity });
+    newLinks.push({ ibmId: selIBM, clarityId: selClarity, isRelink: ibmTab === "matched" });
     setLinked(newLinks);
     setSelIBM(null);
     setSelClarity(null);
@@ -2889,30 +2900,53 @@ function NameMatchPanel({users, setUsers, onClose}) {
       linked.forEach(function(link){
         var ibmIdx     = next.findIndex(function(u){ return u && u.id === link.ibmId; });
         var clarityIdx = next.findIndex(function(u){ return u && u.id === link.clarityId; });
-        if (ibmIdx === -1 || clarityIdx === -1) return;
-        var ibm     = next[ibmIdx];
-        var clarity = next[clarityIdx];
-        if (!ibm || !clarity) return;
-        // Merge IBM scheduled data + Clarity actual data
-        next[ibmIdx] = Object.assign({}, ibm, {
-          entered:         clarity.entered     || 0,
-          actualHours:     clarity.entered     || 0,
-          resourceManager: clarity.resourceManager || ibm.resourceManager,
-          timesheetStatus: clarity.timesheetStatus || ibm.timesheetStatus,
-          approvedBy:      clarity.approvedBy  || ibm.approvedBy,
-          resourceActive:  clarity.resourceActive || ibm.resourceActive,
-          periods:         clarity.periods     || ibm.periods || [],
-          clarityPeriods:  clarity.clarityPeriods || clarity.periods || [],
-          monthlyHours:    clarity.monthlyHours || ibm.monthlyHours || {},
-          clarityName:     clarity.name,
-          dataSource:      "Both",
-          lastEntry:       (clarity.periods && clarity.periods.length)
-                            ? clarity.periods[clarity.periods.length-1]
-                            : ibm.lastEntry,
-        });
-        // Remove the now-merged clarity record
-        var removeIdx = next.findIndex(function(u){ return u && u.id === link.clarityId; });
-        if (removeIdx !== -1) next.splice(removeIdx, 1);
+        if (ibmIdx === -1) return;
+        var ibm = next[ibmIdx];
+        if (!ibm) return;
+
+        if (link.isRelink) {
+          // Relinking an already-matched record: just swap the clarityName/hours
+          if (clarityIdx !== -1) {
+            var newClarity = next[clarityIdx];
+            next[ibmIdx] = Object.assign({}, ibm, {
+              clarityName:     newClarity.clarityName || newClarity.name,
+              entered:         newClarity.entered || 0,
+              actualHours:     newClarity.entered || 0,
+              monthlyHours:    newClarity.monthlyHours || {},
+              timesheetStatus: newClarity.timesheetStatus || ibm.timesheetStatus,
+              resourceManager: newClarity.resourceManager || ibm.resourceManager,
+              approvedBy:      newClarity.approvedBy || ibm.approvedBy,
+              periods:         newClarity.periods || ibm.periods || [],
+              dataSource:      "Both",
+            });
+            // Remove merged clarity record from list
+            var rmIdx = next.findIndex(function(u){ return u && u.id === link.clarityId; });
+            if (rmIdx !== -1) next.splice(rmIdx, 1);
+          }
+        } else {
+          // Standard unmatched → match
+          if (clarityIdx === -1) return;
+          var clarity = next[clarityIdx];
+          if (!clarity) return;
+          next[ibmIdx] = Object.assign({}, ibm, {
+            entered:         clarity.entered     || 0,
+            actualHours:     clarity.entered     || 0,
+            resourceManager: clarity.resourceManager || ibm.resourceManager,
+            timesheetStatus: clarity.timesheetStatus || ibm.timesheetStatus,
+            approvedBy:      clarity.approvedBy  || ibm.approvedBy,
+            resourceActive:  clarity.resourceActive || ibm.resourceActive,
+            periods:         clarity.periods     || ibm.periods || [],
+            clarityPeriods:  clarity.clarityPeriods || clarity.periods || [],
+            monthlyHours:    clarity.monthlyHours || ibm.monthlyHours || {},
+            clarityName:     clarity.name,
+            dataSource:      "Both",
+            lastEntry:       (clarity.periods && clarity.periods.length)
+                              ? clarity.periods[clarity.periods.length-1]
+                              : ibm.lastEntry,
+          });
+          var removeIdx = next.findIndex(function(u){ return u && u.id === link.clarityId; });
+          if (removeIdx !== -1) next.splice(removeIdx, 1);
+        }
       });
       return next;
     });
@@ -2933,8 +2967,8 @@ function NameMatchPanel({users, setUsers, onClose}) {
             <div>
               <div style={{fontSize:16,fontWeight:700}}>Fix Name Mismatches</div>
               <div style={{fontSize:12,opacity:0.9,marginTop:3}}>
-                {ibmOnly.length} IBM-only &nbsp;&#8226;&nbsp; {clarityOnly.length} Clarity-only
-                {pendingCount > 0 && <span style={{marginLeft:8,background:"rgba(255,255,255,0.25)",padding:"1px 8px",fontWeight:700}}>{pendingCount} linked</span>}
+                {ibmOnly.length} unmatched &nbsp;&#8226;&nbsp; {bothMatched.length} auto-matched &nbsp;&#8226;&nbsp; {clarityOnly.length} Clarity-only
+                {pendingCount > 0 && <span style={{marginLeft:8,background:"rgba(255,255,255,0.25)",padding:"1px 8px",fontWeight:700}}>{pendingCount} queued</span>}
               </div>
             </div>
             <button onClick={onClose} style={{background:"none",border:"1px solid rgba(255,255,255,0.5)",color:"#fff",padding:"5px 14px",cursor:"pointer",fontSize:13}}>&#x2715; Close</button>
@@ -2967,72 +3001,87 @@ function NameMatchPanel({users, setUsers, onClose}) {
           </div>
         )}
 
+        {/* Tab switcher */}
+        <div style={{background:IBM.gray90,padding:"0 24px",display:"flex",gap:0,flexShrink:0}}>
+          {[["unmatched","🔴 Unmatched IBM ("+ibmOnly.length+")"],["matched","⚠ Fix Auto-matched ("+bothMatched.length+")"]].map(function(t){
+            return (
+              <button key={t[0]} onClick={function(){ setIbmTab(t[0]); setSelIBM(null); setSelClarity(null); setSearch(""); }}
+                style={{padding:"9px 18px",background:"none",border:"none",borderBottom:ibmTab===t[0]?"2px solid "+IBM.orange40:"2px solid transparent",
+                  color:ibmTab===t[0]?"#fff":IBM.gray50,cursor:"pointer",fontSize:12,fontWeight:ibmTab===t[0]?700:400}}>
+                {t[1]}
+              </button>
+            );
+          })}
+        </div>
+
         {/* Instructions */}
         <div style={{background:"#fffbf5",borderBottom:"1px solid "+IBM.yellow20,padding:"8px 24px",flexShrink:0,fontSize:12,color:"#6e4a00"}}>
-          <b>How to use:</b> Click an IBM name on the left &rarr; Clarity names sort by match score on the right &rarr; click the Clarity name &rarr; confirm the link &rarr; Apply when done.
+          {ibmTab === "unmatched"
+            ? <span><b>Unmatched:</b> Click an IBM name → select the correct Clarity name → Confirm Link → repeat for all → Apply All</span>
+            : <span><b>Fix auto-match:</b> Click an incorrectly matched IBM name → select the correct Clarity name → Confirm Link → Apply All</span>
+          }
         </div>
 
         {/* Split pane */}
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",flex:1,overflow:"hidden",minHeight:0}}>
 
-          {/* LEFT: IBM Only */}
+          {/* LEFT: IBM list */}
           <div style={{borderRight:"1px solid "+IBM.gray20,display:"flex",flexDirection:"column",overflow:"hidden"}}>
-            <div style={{background:IBM.blue10,borderBottom:"1px solid "+IBM.blue20,padding:"10px 16px",flexShrink:0}}>
-              <div style={{fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.07em",color:IBM.blue60,marginBottom:6}}>
-                IBM Only — {ibmOnly.length} record{ibmOnly.length!==1?"s":""}
+            <div style={{background:ibmTab==="unmatched"?IBM.blue10:"#fff8f0",borderBottom:"1px solid "+(ibmTab==="unmatched"?IBM.blue20:IBM.orange20),padding:"10px 16px",flexShrink:0}}>
+              <div style={{fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.07em",color:ibmTab==="unmatched"?IBM.blue60:IBM.orange40,marginBottom:6}}>
+                {ibmTab==="unmatched" ? "IBM Only — "+ibmOnly.length+" record"+(ibmOnly.length!==1?"s":"") : "Auto-matched — "+bothMatched.length+" record"+(bothMatched.length!==1?"s":"")}
               </div>
               <input value={search} onChange={function(e){ setSearch(e.target.value); setSelClarity(null); }}
                 placeholder="Search by name…"
-                style={{width:"100%",padding:"6px 10px",border:"1px solid "+IBM.blue20,fontSize:12,outline:"none",background:"#fff"}}/>
+                style={{width:"100%",padding:"6px 10px",border:"1px solid "+(ibmTab==="unmatched"?IBM.blue20:IBM.orange20),fontSize:12,outline:"none",background:"#fff"}}/>
             </div>
             <div style={{flex:1,overflowY:"auto"}}>
-              {ibmOnly.length === 0 && (
-                <div style={{padding:"32px",textAlign:"center",color:IBM.green50,fontSize:13,fontWeight:600}}>&#10003; All IBM records matched</div>
+              {activeIbmList.length === 0 && (
+                <div style={{padding:"32px",textAlign:"center",color:IBM.green50,fontSize:13,fontWeight:600}}>&#10003; {ibmTab==="unmatched"?"All IBM records matched":"No auto-matched records"}</div>
               )}
               {ibmFiltered.map(function(u){
                 if (!u || !u.id) return null;
                 var isSelected = selIBM === u.id;
+                var isQueued   = linked.some(function(l){ return l.ibmId === u.id; });
                 return (
                   <div key={u.id}
-                    onClick={function(){ setSelIBM(isSelected ? null : u.id); setSelClarity(null); }}
-                    style={{padding:"11px 16px",borderBottom:"1px solid "+IBM.gray20,cursor:"pointer",
-                      background:isSelected ? IBM.blue10 : "#fff",
-                      borderLeft: isSelected ? "3px solid "+IBM.blue60 : "3px solid transparent",
+                    onClick={function(){ if (!isQueued || ibmTab==="matched") { setSelIBM(isSelected ? null : u.id); setSelClarity(null); } }}
+                    style={{padding:"11px 16px",borderBottom:"1px solid "+IBM.gray20,cursor:isQueued&&ibmTab==="unmatched"?"default":"pointer",
+                      background:isQueued?IBM.green10:isSelected?IBM.blue10:"#fff",
+                      borderLeft:isQueued?"3px solid "+IBM.green50:isSelected?"3px solid "+IBM.blue60:"3px solid transparent",
                       transition:"background 0.1s"}}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
                       <div style={{flex:1,minWidth:0}}>
                         <div style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:IBM.gray100}}>{u.name}</div>
+                        {ibmTab==="matched" && u.clarityName && u.clarityName !== u.name && (
+                          <div style={{fontSize:11,color:IBM.orange40,marginTop:1}}>
+                            Currently: <b>{u.clarityName}</b>
+                          </div>
+                        )}
                         <div style={{fontSize:11,color:IBM.gray60,marginTop:2,display:"flex",gap:8,flexWrap:"wrap"}}>
                           {u.scheduled > 0 && <span>{u.scheduled}h sched</span>}
                           {u.wbsId && <span>{u.wbsId}</span>}
                           {u.country && <span>{u.country}</span>}
                         </div>
                       </div>
-                      <span style={{fontSize:9,background:IBM.blue10,color:IBM.blue60,padding:"2px 6px",border:"1px solid "+IBM.blue20,fontWeight:700,flexShrink:0,marginLeft:6}}>IBM</span>
+                      <span style={{fontSize:9,background:ibmTab==="unmatched"?IBM.blue10:"#fff8f0",color:ibmTab==="unmatched"?IBM.blue60:IBM.orange40,padding:"2px 6px",border:"1px solid "+(ibmTab==="unmatched"?IBM.blue20:IBM.orange20),fontWeight:700,flexShrink:0,marginLeft:6}}>
+                        {ibmTab==="unmatched"?"IBM":"AUTO"}
+                      </span>
                     </div>
-                    {isSelected && (
+                    {isSelected && !isQueued && (
                       <div style={{fontSize:11,color:IBM.blue60,marginTop:5,fontWeight:600}}>
-                        &#8594; Now select the matching Clarity name on the right
+                        &#8594; Now select the correct Clarity name on the right
                       </div>
                     )}
-                  </div>
-                );
-              })}
-              {/* Linked rows shown at bottom */}
-              {linked.map(function(l){
-                var ib = users.find(function(u){ return u && u.id===l.ibmId; });
-                var cl = users.find(function(u){ return u && u.id===l.clarityId; });
-                if (!ib || !cl) return null;
-                return (
-                  <div key={l.ibmId} style={{padding:"10px 16px",borderBottom:"1px solid "+IBM.gray20,background:IBM.green10,borderLeft:"3px solid "+IBM.green50}}>
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                      <div>
-                        <div style={{fontSize:12,fontWeight:700,color:IBM.green50}}>&#10003; {ib.name}</div>
-                        <div style={{fontSize:11,color:IBM.gray60,marginTop:1}}>Linked to: <b style={{color:IBM.purple60}}>{cl.name}</b></div>
+                    {isQueued && (
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:4}}>
+                        <span style={{fontSize:11,color:IBM.green50,fontWeight:600}}>
+                          &#10003; Linked to: {(function(){ var l=linked.find(function(x){return x.ibmId===u.id;}); var cl=l?users.find(function(x){return x.id===l.clarityId;}):null; return cl?(cl.clarityName||cl.name):""; })()}
+                        </span>
+                        <button onClick={function(e){ e.stopPropagation(); removeLink(u.id); }}
+                          style={{background:"none",border:"1px solid "+IBM.red60,color:IBM.red60,padding:"2px 8px",cursor:"pointer",fontSize:10}}>Undo</button>
                       </div>
-                      <button onClick={function(e){ e.stopPropagation(); removeLink(l.ibmId); }}
-                        style={{background:"none",border:"1px solid "+IBM.red60,color:IBM.red60,padding:"2px 8px",cursor:"pointer",fontSize:10}}>Undo</button>
-                    </div>
+                    )}
                   </div>
                 );
               })}
@@ -3043,11 +3092,11 @@ function NameMatchPanel({users, setUsers, onClose}) {
           <div style={{display:"flex",flexDirection:"column",overflow:"hidden"}}>
             <div style={{background:IBM.purple10,borderBottom:"1px solid #d4bbff",padding:"10px 16px",flexShrink:0}}>
               <div style={{fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.07em",color:IBM.purple60,marginBottom:2}}>
-                Clarity Only — {clarityOnly.length} record{clarityOnly.length!==1?"s":""}
+                {ibmTab==="unmatched" ? "Clarity Only — "+clarityOnly.length+" record"+(clarityOnly.length!==1?"s":"") : "All Clarity Names — "+clarityPool.length+" available"}
               </div>
               {!selIBM
                 ? <div style={{fontSize:11,color:IBM.gray50}}>&#8592; Select an IBM record first</div>
-                : <div style={{fontSize:11,color:IBM.purple60}}>Showing best matches for <b>{ibmRec ? ibmRec.name : ""}</b></div>
+                : <div style={{fontSize:11,color:IBM.purple60}}>Best matches for <b>{ibmRec ? ibmRec.name : ""}</b></div>
               }
             </div>
             <div style={{flex:1,overflowY:"auto"}}>
@@ -4020,6 +4069,26 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
                                       else { next[u.normalizedName] = val; }
                                       return next;
                                     });
+                                    // Also update users so detail panel stays valid
+                                    if (val) {
+                                      var newClarityRec = clarityRecs.find(function(c){ return c.normalizedName === val; });
+                                      if (newClarityRec) {
+                                        setUsers(function(prev){ return prev.map(function(pu){
+                                          if (pu.id !== u.id) return pu;
+                                          return Object.assign({}, pu, {
+                                            clarityName: newClarityRec.rawName,
+                                            entered: newClarityRec.actualHours || 0,
+                                            actualHours: newClarityRec.actualHours || 0,
+                                            monthlyHours: newClarityRec.monthlyHours || {},
+                                            timesheetStatus: newClarityRec.timesheetStatus || pu.timesheetStatus,
+                                            resourceManager: newClarityRec.resourceManager || pu.resourceManager,
+                                            approvedBy: newClarityRec.approvedBy || pu.approvedBy,
+                                            periods: newClarityRec.periods || pu.periods,
+                                            dataSource: "Both",
+                                          });
+                                        }); });
+                                      }
+                                    }
                                     setRelinkUserId(null);
                                   }}
                                   style={{fontSize:11,padding:"3px 6px",border:"1px solid "+IBM.orange40,outline:"none",background:"#fff",color:IBM.gray100,maxWidth:180}}>
