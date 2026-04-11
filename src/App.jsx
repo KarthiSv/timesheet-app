@@ -2832,13 +2832,17 @@ function BulkBar({selected,total,onSelectAll,onClearAll,onBulkNotif,onSendAll,on
 }
 
 // ─── NAME MATCH PANEL (post-import fix) ──────────────────────────────────────
-function NameMatchPanel({users, setUsers, onClose}) {
+function NameMatchPanel({users, setUsers, savedClarityRecs, onClose}) {
   var ibmOnly     = users.filter(function(u){ return u.dataSource === "IBM only"; });
   // Also include already-matched Both records so user can fix incorrect auto-matches
   var bothMatched = users.filter(function(u){ return u.dataSource === "Both"; });
   var clarityOnly = users.filter(function(u){ return u.dataSource === "Clarity only"; });
-  // All clarity records available for relinking (both unmatched and already matched)
-  var allClarityForRelink = users.filter(function(u){ return u.dataSource === "Clarity only" || u.dataSource === "Both"; });
+
+  // For the right panel: always use savedClarityRecs (original full Clarity list)
+  // This ensures ALL Clarity names are visible regardless of current match state
+  var allClaritySource = (savedClarityRecs && savedClarityRecs.length > 0)
+    ? savedClarityRecs   // rawName, normalizedName, actualHours, timesheetStatus, resourceManager
+    : clarityOnly;       // fallback to users if savedClarityRecs not available
 
   const[search,    setSearch]    = useState("");
   const[ibmTab,    setIbmTab]    = useState("unmatched"); // "unmatched" | "matched"
@@ -2850,20 +2854,35 @@ function NameMatchPanel({users, setUsers, onClose}) {
   var activeIbmList = ibmTab === "unmatched" ? ibmOnly : bothMatched;
 
   // Always guard: ibmRec/clarityRec could be undefined if id no longer in list
-  var ibmRec     = selIBM     ? (users.find(function(u){ return u.id === selIBM; })     || null) : null;
-  var clarityRec = selClarity ? (users.find(function(u){ return u.id === selClarity; }) || null) : null;
+  var ibmRec     = selIBM     ? (users.find(function(u){ return u.id === selIBM; }) || null) : null;
+  var clarityRec = selClarity ? (clarityPool.find(function(c){ return c.id === selClarity; }) || null) : null;
 
-  // If selection became stale (record removed after apply), clear it
-  if (selIBM && !ibmRec)     { setTimeout(function(){ setSelIBM(null); }, 0); }
+  // If selection became stale, clear it
+  if (selIBM && !ibmRec)         { setTimeout(function(){ setSelIBM(null); }, 0); }
   if (selClarity && !clarityRec) { setTimeout(function(){ setSelClarity(null); }, 0); }
 
   var ibmTab_isMatched = ibmTab === "matched";
 
-  // For Fix Auto-matched: show ALL users as potential relink targets (not just Clarity-only)
-  // This is needed because after import, most Clarity records are already "Both"
+  // Build clarity pool with normalized shape { id, name, clarityName, entered, timesheetStatus, resourceManager }
+  var clarityPoolNorm = allClaritySource.map(function(c){
+    return {
+      id:              c.normalizedName || c.id,
+      name:            c.rawName || c.name || "",
+      clarityName:     c.rawName || c.clarityName || c.name || "",
+      entered:         c.actualHours || c.entered || 0,
+      timesheetStatus: c.timesheetStatus || "",
+      resourceManager: c.resourceManager || "",
+      monthlyHours:    c.monthlyHours || {},
+      periods:         c.periods || [],
+      clarityPeriods:  c.periods || [],
+    };
+  });
+
+  // For unmatched tab: only show records that aren't already fully matched in users
+  // For matched tab: show all clarity records (so user can reassign any wrong link)
   var clarityPool = ibmTab_isMatched
-    ? users.filter(function(c){ return c.id !== selIBM; }) // all users except self
-    : clarityOnly;
+    ? clarityPoolNorm.filter(function(c){ return c.id !== selIBM; })
+    : clarityPoolNorm; // show ALL for unmatched too — let user pick any Clarity name
 
   const[claritySearch, setClaritySearch] = useState("");
 
@@ -2876,7 +2895,7 @@ function NameMatchPanel({users, setUsers, onClose}) {
     });
     scored.sort(function(a,b){ return b.score - a.score; });
     return scored;
-  }, [selIBM, ibmTab, users.length]);
+  }, [selIBM, ibmTab, allClaritySource.length]);
 
   // Filter clarity list — use claritySearch for right panel, search for left
   var filteredClarity = useMemo(function(){
@@ -2919,58 +2938,61 @@ function NameMatchPanel({users, setUsers, onClose}) {
     if (!linked.length) return;
     setUsers(function(prev){
       var next = prev.slice();
+      var toRemoveIds = {};
+
       linked.forEach(function(link){
-        var ibmIdx     = next.findIndex(function(u){ return u && u.id === link.ibmId; });
-        var clarityIdx = next.findIndex(function(u){ return u && u.id === link.clarityId; });
+        var ibmIdx = next.findIndex(function(u){ return u && u.id === link.ibmId; });
         if (ibmIdx === -1) return;
         var ibm = next[ibmIdx];
         if (!ibm) return;
 
-        if (link.isRelink) {
-          // Relinking an already-matched record: just swap the clarityName/hours
-          if (clarityIdx !== -1) {
-            var newClarity = next[clarityIdx];
-            next[ibmIdx] = Object.assign({}, ibm, {
-              clarityName:     newClarity.clarityName || newClarity.name,
-              entered:         newClarity.entered || 0,
-              actualHours:     newClarity.entered || 0,
-              monthlyHours:    newClarity.monthlyHours || {},
-              timesheetStatus: newClarity.timesheetStatus || ibm.timesheetStatus,
-              resourceManager: newClarity.resourceManager || ibm.resourceManager,
-              approvedBy:      newClarity.approvedBy || ibm.approvedBy,
-              periods:         newClarity.periods || ibm.periods || [],
-              dataSource:      "Both",
-            });
-            // Remove merged clarity record from list
-            var rmIdx = next.findIndex(function(u){ return u && u.id === link.clarityId; });
-            if (rmIdx !== -1) next.splice(rmIdx, 1);
-          }
-        } else {
-          // Standard unmatched → match
-          if (clarityIdx === -1) return;
-          var clarity = next[clarityIdx];
-          if (!clarity) return;
-          next[ibmIdx] = Object.assign({}, ibm, {
-            entered:         clarity.entered     || 0,
-            actualHours:     clarity.entered     || 0,
-            resourceManager: clarity.resourceManager || ibm.resourceManager,
-            timesheetStatus: clarity.timesheetStatus || ibm.timesheetStatus,
-            approvedBy:      clarity.approvedBy  || ibm.approvedBy,
-            resourceActive:  clarity.resourceActive || ibm.resourceActive,
-            periods:         clarity.periods     || ibm.periods || [],
-            clarityPeriods:  clarity.clarityPeriods || clarity.periods || [],
-            monthlyHours:    clarity.monthlyHours || ibm.monthlyHours || {},
-            clarityName:     clarity.name,
-            dataSource:      "Both",
-            lastEntry:       (clarity.periods && clarity.periods.length)
-                              ? clarity.periods[clarity.periods.length-1]
-                              : ibm.lastEntry,
-          });
-          var removeIdx = next.findIndex(function(u){ return u && u.id === link.clarityId; });
-          if (removeIdx !== -1) next.splice(removeIdx, 1);
+        // Find clarity data from clarityPool (normalized from savedClarityRecs)
+        var clarityData = clarityPool.find(function(c){ return c.id === link.clarityId; });
+        if (!clarityData) {
+          // fallback: look in users array
+          var clarityUser = next.find(function(u){ return u && u.id === link.clarityId; });
+          if (clarityUser) clarityData = {
+            id: clarityUser.id,
+            name: clarityUser.name,
+            clarityName: clarityUser.clarityName || clarityUser.name,
+            entered: clarityUser.entered || 0,
+            monthlyHours: clarityUser.monthlyHours || {},
+            timesheetStatus: clarityUser.timesheetStatus || "",
+            resourceManager: clarityUser.resourceManager || "",
+            approvedBy: clarityUser.approvedBy || "",
+            resourceActive: clarityUser.resourceActive || "",
+            periods: clarityUser.periods || [],
+            clarityPeriods: clarityUser.clarityPeriods || [],
+          };
         }
+        if (!clarityData) return;
+
+        // Merge IBM record with Clarity data
+        next[ibmIdx] = Object.assign({}, ibm, {
+          clarityName:     clarityData.clarityName || clarityData.name,
+          entered:         clarityData.entered || 0,
+          actualHours:     clarityData.entered || 0,
+          monthlyHours:    clarityData.monthlyHours || {},
+          timesheetStatus: clarityData.timesheetStatus || ibm.timesheetStatus,
+          resourceManager: clarityData.resourceManager || ibm.resourceManager,
+          approvedBy:      clarityData.approvedBy || ibm.approvedBy,
+          resourceActive:  clarityData.resourceActive || ibm.resourceActive || "",
+          periods:         clarityData.periods || ibm.periods || [],
+          clarityPeriods:  clarityData.clarityPeriods || clarityData.periods || [],
+          dataSource:      "Both",
+          lastEntry:       (clarityData.periods && clarityData.periods.length)
+                            ? clarityData.periods[clarityData.periods.length-1]
+                            : ibm.lastEntry,
+        });
+
+        // Mark the old Clarity-only user record for removal (if it existed in users)
+        toRemoveIds[link.clarityId] = true;
       });
-      return next;
+
+      // Remove merged Clarity-only records in one pass using filter (no splice index issues)
+      return next.filter(function(u){
+        return u && !toRemoveIds[u.id];
+      });
     });
     setLinked([]);
     setApplyDone(true);
@@ -3114,7 +3136,7 @@ function NameMatchPanel({users, setUsers, onClose}) {
           <div style={{display:"flex",flexDirection:"column",overflow:"hidden"}}>
             <div style={{background:IBM.purple10,borderBottom:"1px solid #d4bbff",padding:"10px 16px",flexShrink:0}}>
               <div style={{fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.07em",color:IBM.purple60,marginBottom:6}}>
-                {ibmTab_isMatched ? "All Users — "+clarityPool.length+" available" : "Clarity Only — "+clarityOnly.length+" record"+(clarityOnly.length!==1?"s":"")}
+                All Clarity Names — {clarityPool.length} available
               </div>
               {!selIBM
                 ? <div style={{fontSize:11,color:IBM.gray50}}>&#8592; Select an IBM record first</div>
@@ -4391,6 +4413,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
         <NameMatchPanel
           users={users}
           setUsers={setUsers}
+          savedClarityRecs={savedClarityRecs}
           onClose={function(){setShowNameMatch(false);}}
         />
       )}
