@@ -1261,8 +1261,7 @@ function CalendarEventsTab({calendarEvents,setCalendarEvents,showToast}){
 // ─── EMPLOYEE DETAIL PANEL (Manager) ─────────────────────────────────────────
 // KEY FIX: receives userId and looks up LIVE user from users array every render
 function EmployeeDetailPanel({userId,users,monthLabel,periodLabel,onFixEntry,onSendEmail,onSendTeams,onClose,calendarEvents}){
-  const user=users.find(u=>u.id===userId);
-  if(!user)return null;
+  const user=users.find(u=>u.id===userId)||null;
 
   const[panelTab,setPanelTab]=useState("overview");
   const[mgrMonth,setMgrMonth]=useState(MONTH_NAMES[new Date().getMonth()]);
@@ -1275,13 +1274,14 @@ function EmployeeDetailPanel({userId,users,monthLabel,periodLabel,onFixEntry,onS
   const[fixHours,setFixHours]=useState("");
   const[fixNote,setFixNote]=useState("");
 
-  const sev=getSeverity(user),status=getStatus(user);
-  const diff=Number(user.scheduled)-Number(user.entered);
-  const pct=user.scheduled?Math.round((user.entered/user.scheduled)*100):0;
+  const sev=user?getSeverity(user):0;
+  const status=user?getStatus(user):"red";
+  const diff=user?(Number(user.scheduled)-Number(user.entered)):0;
+  const pct=user&&user.scheduled?Math.round((user.entered/user.scheduled)*100):0;
 
   // Live monthly data
   const mk=monthKey(mgrMonth,mgrYear);
-  const monthData=(user.monthlyEntries||{})[mk]||makeEmptyMonthEntries(mgrMonth,mgrYear);
+  const monthData=user?((user.monthlyEntries||{})[mk]||makeEmptyMonthEntries(mgrMonth,mgrYear)):{};
 
   // Compute live monthly total
   const liveMonthTotal=useMemo(()=>{
@@ -1293,11 +1293,14 @@ function EmployeeDetailPanel({userId,users,monthLabel,periodLabel,onFixEntry,onS
     return t;
   },[monthData]);
 
-  const projectSummary=useMemo(()=>{const map={};(user.history||[]).forEach(r=>{const k=r.projectCode;if(!map[k])map[k]={code:r.projectCode,name:r.projectName,scheduled:0,entered:0,diff:0,periods:0,missPeriods:0};map[k].scheduled+=r.scheduled;map[k].entered+=r.entered;map[k].diff+=r.diff;map[k].periods++;if(r.diff>0)map[k].missPeriods++;});return Object.values(map);},[user]);
-  const timelineData=useMemo(()=>{const bp={};(user.history||[]).forEach(r=>{const k=r.periodLabel;if(!bp[k])bp[k]={period:k,scheduled:0,entered:0};bp[k].scheduled+=r.scheduled;bp[k].entered+=r.entered;});return Object.values(bp);},[user]);
+  const projectSummary=useMemo(()=>{const map={};((user&&user.history)||[]).forEach(r=>{const k=r.projectCode;if(!map[k])map[k]={code:r.projectCode,name:r.projectName,scheduled:0,entered:0,diff:0,periods:0,missPeriods:0};map[k].scheduled+=r.scheduled;map[k].entered+=r.entered;map[k].diff+=r.diff;map[k].periods++;if(r.diff>0)map[k].missPeriods++;});return Object.values(map);},[user]);
+  const timelineData=useMemo(()=>{const bp={};((user&&user.history)||[]).forEach(r=>{const k=r.periodLabel;if(!bp[k])bp[k]={period:k,scheduled:0,entered:0};bp[k].scheduled+=r.scheduled;bp[k].entered+=r.entered;});return Object.values(bp);},[user]);
 
-  const mTh={background:IBM.gray100,color:"#fff",padding:"8px 12px",textAlign:"left",fontWeight:400,fontSize:11,textTransform:"uppercase",letterSpacing:"0.05em",borderRight:`1px solid ${IBM.gray80}`,whiteSpace:"nowrap"};
-  const mTd=(alt,hi)=>({padding:"9px 12px",borderBottom:`1px solid ${IBM.gray20}`,background:hi?IBM.red10:alt?IBM.gray10:"#fff",fontSize:13});
+  // NOW safe to return null after all hooks are called
+  if(!user)return null;
+
+  const mTh={background:IBM.gray100,color:"#fff",padding:"9px 14px",textAlign:"left",fontWeight:500,fontSize:12,textTransform:"uppercase",letterSpacing:"0.05em",borderRight:`1px solid ${IBM.gray80}`,whiteSpace:"nowrap"};
+  const mTd=(alt,hi)=>({padding:"10px 14px",borderBottom:`1px solid ${IBM.gray20}`,background:hi?IBM.red10:alt?IBM.gray10:"#fff",fontSize:14});
 
   return(
     <div style={{position:"fixed",inset:0,background:"rgba(22,22,22,.55)",zIndex:400,display:"flex",justifyContent:"flex-end"}} onClick={onClose}>
@@ -1306,7 +1309,7 @@ function EmployeeDetailPanel({userId,users,monthLabel,periodLabel,onFixEntry,onS
         <div style={{background:IBM.gray100,color:"#fff",padding:"18px 28px",flexShrink:0}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
             <div style={{display:"flex",alignItems:"center",gap:12}}>
-              <div style={{width:42,height:42,borderRadius:"50%",background:IBM.blue60,display:"flex",alignItems:"center",justifyContent:"center",fontSize:17,fontWeight:700,color:"#fff",flexShrink:0}}>{user.name.split(" ").map(n=>n[0]).join("")}</div>
+              <div style={{width:42,height:42,borderRadius:"50%",background:IBM.blue60,display:"flex",alignItems:"center",justifyContent:"center",fontSize:17,fontWeight:700,color:"#fff",flexShrink:0}}>{(user.name||"?").split(" ").map(n=>n[0]).join("")}</div>
               <div><div style={{fontSize:19,fontWeight:600}}>{user.name}</div>
               {user.clarityName && user.clarityName !== user.name && (
                 <div style={{display:"flex",alignItems:"center",gap:6,marginTop:3}}>
@@ -1445,7 +1448,7 @@ function EmployeeDetailPanel({userId,users,monthLabel,periodLabel,onFixEntry,onS
                 </div>
               </div>
               {/* IBM + Clarity Fields */}
-              {(user.wbsId||user.talentId||user.billingCode||user.approvedBy||user.periods.length>0)&&(
+              {(user.wbsId||user.talentId||user.billingCode||user.approvedBy||(user.periods&&user.periods.length>0))&&(
                 <div style={{background:IBM.gray10,border:"1px solid "+IBM.gray20,padding:"10px 16px",marginBottom:14,display:"flex",gap:20,flexWrap:"wrap"}}>
                   {user.wbsId&&<div><div style={{fontSize:10,color:IBM.gray50,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:2}}>WBS ID</div><div style={{fontSize:12,fontWeight:600}}>{user.wbsId}</div></div>}
                   {user.talentId&&<div><div style={{fontSize:10,color:IBM.gray50,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:2}}>Talent ID</div><div style={{fontSize:12,fontWeight:600}}>{user.talentId}</div></div>}
@@ -3693,12 +3696,12 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
   const handleBulkNotif=()=>{const targets=users.filter(u=>selected.includes(u.id)&&getStatus(u)!=="green");if(!targets.length){showToast("All selected are complete","error");return;}const results=genBulkNotifs(targets,monthLabel,periodLabel,(d,t,n)=>setBulkProgress(`${d}/${t}`));setNotifications(p=>({...p,...results}));showToast(`✓ ${Object.keys(results).length} notifications ready`);setBulkProgress("");};
   const handleBulkSendAll=()=>{users.filter(u=>selected.includes(u.id)&&notifications[u.id]).forEach(u=>handleSendEmail(u));showToast("Emails sent");};
 
-  const navBtn=a=>({background:"none",border:"none",color:a?"#fff":IBM.gray50,cursor:"pointer",fontSize:13,padding:"0 4px",height:48,borderBottom:a?`2px solid ${IBM.blue60}`:"2px solid transparent",fontFamily:"inherit"});
-  const TH={background:IBM.gray100,color:"#fff",padding:"9px 11px",textAlign:"left",fontWeight:400,fontSize:11,textTransform:"uppercase",letterSpacing:"0.06em",borderRight:`1px solid ${IBM.gray80}`,whiteSpace:"nowrap"};
-  const TD=alt=>({padding:"10px 11px",borderBottom:`1px solid ${IBM.gray20}`,verticalAlign:"middle",background:alt?IBM.gray10:"#fff"});
+  const navBtn=a=>({background:"none",border:"none",color:a?"#fff":IBM.gray50,cursor:"pointer",fontSize:15,padding:"0 10px",height:52,borderBottom:a?`3px solid ${IBM.blue60}`:"3px solid transparent",fontFamily:"inherit",fontWeight:a?600:400,letterSpacing:"0.01em"});
+  const TH={background:IBM.gray100,color:"#fff",padding:"11px 13px",textAlign:"left",fontWeight:500,fontSize:12,textTransform:"uppercase",letterSpacing:"0.06em",borderRight:`1px solid ${IBM.gray80}`,whiteSpace:"nowrap"};
+  const TD=alt=>({padding:"12px 13px",borderBottom:`1px solid ${IBM.gray20}`,verticalAlign:"middle",background:alt?IBM.gray10:"#fff"});
 
   return(
-    <div style={{fontFamily:FF_SANS,background:IBM.gray10,minHeight:"100vh",color:IBM.gray100}}>
+    <div style={{fontFamily:FF_SANS,background:IBM.gray10,minHeight:"100vh",color:IBM.gray100,fontSize:14}}>
       <style>{CSS_MANAGER}</style>
 
       {/* NAV */}
@@ -3706,22 +3709,22 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
         var[mobileMenuOpen,setMobileMenuOpen]=React.useState(false);
         return (
           <React.Fragment>
-            <nav style={{background:IBM.gray100,padding:"0 16px 0 20px",display:"flex",alignItems:"center",height:48,position:"sticky",top:0,zIndex:200,borderBottom:"1px solid "+IBM.gray80}}>
-              <div style={{display:"flex",alignItems:"center",gap:8,flex:1,minWidth:0}}>
-                <span style={{fontSize:20,fontWeight:700,color:IBM.blue60,fontFamily:FF_MONO,letterSpacing:"-1px",flexShrink:0}}>IBM</span>
-                <span style={{width:1,height:18,background:IBM.gray70,margin:"0 10px",flexShrink:0}}/>
-                <span style={{fontSize:13,color:"#f4f4f4",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>Timesheet Manager</span>
-                <span style={{background:"#5b5ea6",color:"#fff",padding:"2px 6px",fontSize:10,fontWeight:600,flexShrink:0}}>MGR</span>
-                {isImported&&<span style={{background:IBM.green10,border:"1px solid "+IBM.green20,color:"#0e6027",padding:"2px 6px",fontSize:10,fontWeight:600,flexShrink:0}}>● LIVE</span>}
+            <nav style={{background:IBM.gray100,padding:"0 24px 0 24px",display:"flex",alignItems:"center",justifyContent:"space-between",height:52,position:"sticky",top:0,zIndex:200,borderBottom:"1px solid "+IBM.gray80}}>
+              <div style={{display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
+                <span style={{fontSize:22,fontWeight:700,color:IBM.blue60,fontFamily:FF_MONO,letterSpacing:"-1px",flexShrink:0}}>IBM</span>
+                <span style={{width:1,height:20,background:IBM.gray70,margin:"0 12px",flexShrink:0}}/>
+                <span style={{fontSize:15,color:"#f4f4f4",whiteSpace:"nowrap",fontWeight:500}}>Timesheet Manager</span>
+                <span style={{background:"#5b5ea6",color:"#fff",padding:"3px 8px",fontSize:11,fontWeight:600,flexShrink:0}}>MGR</span>
+                {isImported&&<span style={{background:IBM.green10,border:"1px solid "+IBM.green20,color:"#0e6027",padding:"3px 8px",fontSize:11,fontWeight:600,flexShrink:0}}>● LIVE</span>}
               </div>
-              {/* Desktop nav */}
-              <div className="mgr-nav-links" style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
+              {/* Desktop nav - centered */}
+              <div className="mgr-nav-links" style={{display:"flex",alignItems:"center",gap:4,flexShrink:0}}>
                 {[["dashboard","Dashboard"],["records","Records"],["calendar","📅 Calendar"],["users","👥 Users"],["profile","Profile"]].map(function(item){
                   return <button key={item[0]} style={navBtn(activeTab===item[0])} onClick={function(){setActiveTab(item[0]);}}>{item[1]}</button>;
                 })}
-                <button style={{padding:"5px 12px",background:IBM.blue60,color:"#fff",border:"none",cursor:"pointer",fontSize:12}} onClick={function(){setShowImport(true);}}>↑ Import</button>
-                <div style={{width:28,height:28,borderRadius:"50%",background:"#5b5ea6",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:"#fff"}}>{(session.name||"M").split(" ").map(function(n){return n[0];}).join("").slice(0,2)}</div>
-                <button onClick={onLogout} style={{background:"none",border:"1px solid "+IBM.gray70,color:IBM.gray30,padding:"4px 9px",cursor:"pointer",fontSize:12}}>Sign Out</button>
+                <button style={{padding:"7px 16px",background:IBM.blue60,color:"#fff",border:"none",cursor:"pointer",fontSize:13,fontWeight:600,marginLeft:8}} onClick={function(){setShowImport(true);}}>↑ Import</button>
+                <div style={{width:30,height:30,borderRadius:"50%",background:"#5b5ea6",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700,color:"#fff",marginLeft:6}}>{(session.name||"M").split(" ").map(function(n){return n[0];}).join("").slice(0,2)}</div>
+                <button onClick={onLogout} style={{background:"none",border:"1px solid "+IBM.gray70,color:IBM.gray30,padding:"5px 11px",cursor:"pointer",fontSize:13,marginLeft:4}}>Sign Out</button>
               </div>
               {/* Mobile hamburger */}
               <div className="mgr-nav-menu" style={{marginLeft:"auto",display:"none",alignItems:"center",gap:8}}>
@@ -4046,9 +4049,9 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
                       <td style={TD(alt)} onClick={function(e){e.stopPropagation();}}><input type="checkbox" checked={selected.includes(u.id)} onChange={function(){setSelected(function(p){return p.includes(u.id)?p.filter(function(x){return x!==u.id;}):[...p,u.id];});}}/></td>
                       <td style={TD(alt)}><StatusDot status={st}/></td>
                       <td style={Object.assign({},TD(alt),{fontWeight:600})}>
-                        <div style={{fontWeight:600,color:IBM.gray100}}>{u.name}</div>
+                        <div style={{fontWeight:600,fontSize:14,color:IBM.gray100}}>{u.name}</div>
                         {u.clarityName && u.clarityName !== u.name && (
-                          <div style={{fontSize:10,color:IBM.purple60,marginTop:2,display:"flex",alignItems:"center",gap:4}}>
+                          <div style={{fontSize:11,color:IBM.purple60,marginTop:2,display:"flex",alignItems:"center",gap:4}}>
                             <span style={{background:IBM.purple10,border:"1px solid #d4bbff",padding:"1px 5px",fontWeight:700,letterSpacing:"0.03em",flexShrink:0}}>BMO</span>
                             <span style={{color:IBM.gray60,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.clarityName}</span>
                           </div>
