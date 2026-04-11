@@ -2188,6 +2188,7 @@ function ImportModal({onImport, onClose}) {
   const[dragOver, setDragOver] = useState(null);
   const[manualMatches, setManualMatches] = useState({}); // {ibmNormName: clarityNormName}
   const[showManualUI, setShowManualUI] = useState(false);
+  const[relinkUserId, setRelinkUserId] = useState(null); // ibmNormName of row currently showing relink dropdown
   const ibmRef = useRef();
   const clarityRef = useRef();
 
@@ -4001,6 +4002,46 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
                           <div style={{fontSize:10,color:IBM.purple60,marginTop:2,display:"flex",alignItems:"center",gap:4}}>
                             <span style={{background:IBM.purple10,border:"1px solid #d4bbff",padding:"1px 5px",fontWeight:700,letterSpacing:"0.03em",flexShrink:0}}>BMO</span>
                             <span style={{color:IBM.gray60,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.clarityName}</span>
+                          </div>
+                        )}
+                        {/* Re-link button — only for IBM-sourced records */}
+                        {(u.dataSource === "Both" || u.dataSource === "IBM only") && (
+                          <div style={{marginTop:4}} onClick={function(e){e.stopPropagation();}}>
+                            {relinkUserId === u.normalizedName ? (
+                              <div style={{display:"flex",flexDirection:"column",gap:4,marginTop:2}}>
+                                <select
+                                  autoFocus
+                                  defaultValue={manualMatches[u.normalizedName] || ""}
+                                  onChange={function(e){
+                                    var val = e.target.value;
+                                    setManualMatches(function(prev){
+                                      var next = Object.assign({}, prev);
+                                      if (!val) { delete next[u.normalizedName]; }
+                                      else { next[u.normalizedName] = val; }
+                                      return next;
+                                    });
+                                    setRelinkUserId(null);
+                                  }}
+                                  style={{fontSize:11,padding:"3px 6px",border:"1px solid "+IBM.orange40,outline:"none",background:"#fff",color:IBM.gray100,maxWidth:180}}>
+                                  <option value="">-- None (IBM only) --</option>
+                                  {clarityRecs.map(function(c){
+                                    var score = fuzzyMatchScore(u.name, c.rawName);
+                                    var label = score >= 0.4 ? c.rawName + " (" + Math.round(score*100) + "%)" : c.rawName;
+                                    return <option key={c.normalizedName} value={c.normalizedName}>{label}</option>;
+                                  })}
+                                </select>
+                                <button onClick={function(){ setRelinkUserId(null); }}
+                                  style={{fontSize:10,padding:"1px 6px",background:"none",border:"1px solid "+IBM.gray30,color:IBM.gray60,cursor:"pointer",alignSelf:"flex-start"}}>
+                                  Cancel
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                onClick={function(e){ e.stopPropagation(); setRelinkUserId(u.normalizedName); }}
+                                style={{fontSize:9,padding:"1px 7px",background:"none",border:"1px solid "+IBM.orange40,color:IBM.orange40,cursor:"pointer",fontWeight:600,letterSpacing:"0.03em"}}>
+                                &#x21c4; Re-link
+                              </button>
+                            )}
                           </div>
                         )}
                       </td>
