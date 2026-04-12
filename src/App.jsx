@@ -2887,6 +2887,19 @@ function NameMatchPanel({users, setUsers, savedClarityRecs, onClose}) {
   if (selIBM && !ibmRec)         { setTimeout(function(){ setSelIBM(null); }, 0); }
   if (selClarity && !clarityRec) { setTimeout(function(){ setSelClarity(null); }, 0); }
 
+  // Build map: clarityNormalizedId → IBM rawName it is already matched to in users
+  // Used to block linking a Clarity record to a differently-named IBM record
+  var clarityAlreadyMatchedMap = {};
+  users.forEach(function(u) {
+    if (u.dataSource !== "Both") return;
+    var cr = allClaritySource.find(function(c) {
+      return (c.rawName || c.name || "") === (u.clarityName || "");
+    });
+    if (cr) {
+      clarityAlreadyMatchedMap[cr.normalizedName || cr.id] = u.name;
+    }
+  });
+
   const[claritySearch, setClaritySearch] = useState("");
 
   var candidates = useMemo(function(){
@@ -2925,6 +2938,9 @@ function NameMatchPanel({users, setUsers, savedClarityRecs, onClose}) {
 
   function addLink() {
     if (!selIBM || !selClarity) return;
+    // Block if Clarity record is already matched to a different-named IBM record
+    var existingForClarity = clarityAlreadyMatchedMap[selClarity];
+    if (existingForClarity && ibmRec && fuzzyMatchScore(ibmRec.name, existingForClarity) < 0.9) return;
     var newLinks = linked.filter(function(l){ return l.ibmId !== selIBM && l.clarityId !== selClarity; });
     newLinks.push({ ibmId: selIBM, clarityId: selClarity, isRelink: ibmTab === "matched" });
     setLinked(newLinks);
@@ -3218,15 +3234,20 @@ function NameMatchPanel({users, setUsers, savedClarityRecs, onClose}) {
                 var pct      = Math.round(score * 100);
                 var isSelected   = selClarity === c.id;
                 var alreadyLinked = linked.some(function(l){ return l.clarityId === c.id; });
+                // Block if this Clarity record is already matched to a DIFFERENT-named IBM record
+                var existingIBMName = clarityAlreadyMatchedMap[c.id];
+                var blockedByDifferentName = !!(existingIBMName && ibmRec &&
+                  fuzzyMatchScore(ibmRec.name, existingIBMName) < 0.9);
+                var isBlocked = alreadyLinked || blockedByDifferentName;
                 var barColor = pct >= 85 ? IBM.green50 : pct >= 55 ? IBM.orange40 : IBM.gray40;
                 return (
                   <div key={c.id}
-                    onClick={function(){ if (!alreadyLinked && selIBM) setSelClarity(isSelected ? null : c.id); }}
+                    onClick={function(){ if (!isBlocked && selIBM) setSelClarity(isSelected ? null : c.id); }}
                     style={{padding:"11px 16px",borderBottom:"1px solid "+IBM.gray20,
-                      cursor: alreadyLinked || !selIBM ? "default" : "pointer",
-                      background: alreadyLinked ? IBM.gray10 : isSelected ? IBM.purple10 : "#fff",
-                      borderLeft: isSelected ? "3px solid "+IBM.purple60 : alreadyLinked ? "3px solid "+IBM.gray30 : "3px solid transparent",
-                      opacity: alreadyLinked ? 0.5 : 1}}>
+                      cursor: isBlocked || !selIBM ? "default" : "pointer",
+                      background: blockedByDifferentName ? "#fff5f5" : alreadyLinked ? IBM.gray10 : isSelected ? IBM.purple10 : "#fff",
+                      borderLeft: isSelected ? "3px solid "+IBM.purple60 : blockedByDifferentName ? "3px solid "+IBM.red60 : alreadyLinked ? "3px solid "+IBM.gray30 : "3px solid transparent",
+                      opacity: isBlocked ? 0.6 : 1}}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
                       <div style={{flex:1,minWidth:0}}>
                         <div style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:IBM.gray100}}>{c.clarityName || c.name}</div>
@@ -3251,24 +3272,30 @@ function NameMatchPanel({users, setUsers, savedClarityRecs, onClose}) {
                       </div>
                       <span style={{fontSize:9,background:IBM.purple10,color:IBM.purple60,padding:"2px 6px",border:"1px solid #d4bbff",fontWeight:700,flexShrink:0}}>Clarity</span>
                     </div>
-                    {alreadyLinked && <div style={{fontSize:10,color:IBM.gray50,marginTop:3}}>Already linked to another IBM record</div>}
+                    {alreadyLinked && !blockedByDifferentName && <div style={{fontSize:10,color:IBM.gray50,marginTop:3}}>Already linked to another IBM record</div>}
+                    {blockedByDifferentName && <div style={{fontSize:10,color:IBM.red60,marginTop:3,fontWeight:600}}>&#9888; Already matched to <b>{existingIBMName}</b> — different name</div>}
                   </div>
                 );
               })}
             </div>
 
             {/* Confirm link button */}
-            {selIBM && selClarity && ibmRec && clarityRec && (
-              <div style={{padding:"12px 16px",borderTop:"1px solid "+IBM.gray20,background:"#fff",flexShrink:0}}>
-                <div style={{fontSize:12,color:IBM.gray70,marginBottom:8}}>
-                  Link <b style={{color:IBM.blue60}}>{ibmRec.name}</b> &#8596; <b style={{color:IBM.purple60}}>{clarityRec.name}</b>
+            {(function(){
+              if (!selIBM || !selClarity || !ibmRec || !clarityRec) return null;
+              var existingMatch = clarityAlreadyMatchedMap[selClarity];
+              if (existingMatch && fuzzyMatchScore(ibmRec.name, existingMatch) < 0.9) return null;
+              return (
+                <div style={{padding:"12px 16px",borderTop:"1px solid "+IBM.gray20,background:"#fff",flexShrink:0}}>
+                  <div style={{fontSize:12,color:IBM.gray70,marginBottom:8}}>
+                    Link <b style={{color:IBM.blue60}}>{ibmRec.name}</b> &#8596; <b style={{color:IBM.purple60}}>{clarityRec.name}</b>
+                  </div>
+                  <button onClick={addLink}
+                    style={{width:"100%",padding:"10px",background:IBM.orange40,color:"#fff",border:"none",cursor:"pointer",fontSize:13,fontWeight:700}}>
+                    &#10003; Confirm Link
+                  </button>
                 </div>
-                <button onClick={addLink}
-                  style={{width:"100%",padding:"10px",background:IBM.orange40,color:"#fff",border:"none",cursor:"pointer",fontSize:13,fontWeight:700}}>
-                  &#10003; Confirm Link
-                </button>
-              </div>
-            )}
+              );
+            })()}
           </div>
         </div>
       </div>
