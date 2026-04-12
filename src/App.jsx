@@ -3606,6 +3606,8 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
   const[mgrPhone,setMgrPhone]=useState("");
   const[mgrSaved,setMgrSaved]=useState(false);
   const[savedClarityRecs,setSavedClarityRecs]=useState([]); // persisted after import for Re-link dropdown
+  const[relinkUserId,setRelinkUserId]=useState(null); // normalizedName of row showing re-link dropdown in records table
+  const[manualMatches,setManualMatches]=useState({}); // {ibmNormName: clarityNormName} for re-linking in records table
 
   const periodLabel=(PERIODS.find(p=>p.value===selPeriod)||{label:selPeriod}).label;
   const monthLabel=`${selMonth} ${selYear}`;
