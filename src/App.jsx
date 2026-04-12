@@ -2849,6 +2849,7 @@ function NameMatchPanel({users, setUsers, savedClarityRecs, onClose}) {
   const[selIBM,    setSelIBM]    = useState(null);
   const[selClarity,setSelClarity]= useState(null);
   const[linked,    setLinked]    = useState([]);
+  const[delinked,  setDelinked]  = useState([]); // IBM IDs queued to be stripped of Clarity data
   const[applyDone, setApplyDone] = useState(false);
 
   var activeIbmList = ibmTab === "unmatched" ? ibmOnly : bothMatched;
@@ -2937,10 +2938,30 @@ function NameMatchPanel({users, setUsers, savedClarityRecs, onClose}) {
   }
 
   function applyLinks() {
-    if (!linked.length) return;
+    if (!linked.length && !delinked.length) return;
     setUsers(function(prev){
       var next = prev.slice();
       var toRemoveIds = {};
+
+      // Process de-links: strip Clarity data and revert to IBM only
+      delinked.forEach(function(ibmId){
+        var ibmIdx = next.findIndex(function(u){ return u && u.id === ibmId; });
+        if (ibmIdx === -1) return;
+        var ibm = next[ibmIdx];
+        if (!ibm) return;
+        next[ibmIdx] = Object.assign({}, ibm, {
+          clarityName:     null,
+          entered:         0,
+          actualHours:     0,
+          monthlyHours:    {},
+          timesheetStatus: "Not in Clarity",
+          approvedBy:      "",
+          resourceActive:  "",
+          periods:         [],
+          clarityPeriods:  [],
+          dataSource:      "IBM only",
+        });
+      });
 
       linked.forEach(function(link){
         var ibmIdx = next.findIndex(function(u){ return u && u.id === link.ibmId; });
@@ -2997,11 +3018,12 @@ function NameMatchPanel({users, setUsers, savedClarityRecs, onClose}) {
       });
     });
     setLinked([]);
+    setDelinked([]);
     setApplyDone(true);
     setTimeout(function(){ onClose(); }, 900);
   }
 
-  var pendingCount = linked.length;
+  var pendingCount = linked.length + delinked.length;
 
   return (
     <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(22,22,22,.6)",zIndex:500,display:"flex",justifyContent:"flex-end"}} onClick={onClose}>
@@ -3036,6 +3058,17 @@ function NameMatchPanel({users, setUsers, savedClarityRecs, onClose}) {
                     <span style={{color:IBM.gray40}}>&#8596;</span>
                     <b style={{color:IBM.purple60}}>{cl.name}</b>
                     <button onClick={function(){ removeLink(l.ibmId); }} style={{background:"none",border:"none",color:IBM.red60,cursor:"pointer",fontSize:13,lineHeight:1,padding:"0 1px"}}>&#x2715;</button>
+                  </span>
+                );
+              })}
+              {delinked.map(function(ibmId){
+                var ib = users.find(function(u){ return u && u.id===ibmId; });
+                if (!ib) return null;
+                return (
+                  <span key={"delink-"+ibmId} style={{fontSize:11,background:"#fff",border:"1px solid "+IBM.red60,padding:"2px 8px",color:IBM.gray80,display:"inline-flex",alignItems:"center",gap:6}}>
+                    <b style={{color:IBM.blue60}}>{ib.name}</b>
+                    <span style={{color:IBM.red60,fontWeight:700}}>&#8594; IBM only</span>
+                    <button onClick={function(){ setDelinked(function(p){ return p.filter(function(x){ return x!==ibmId; }); }); }} style={{background:"none",border:"none",color:IBM.red60,cursor:"pointer",fontSize:13,lineHeight:1,padding:"0 1px"}}>&#x2715;</button>
                   </span>
                 );
               })}
@@ -3087,14 +3120,15 @@ function NameMatchPanel({users, setUsers, savedClarityRecs, onClose}) {
               )}
               {ibmFiltered.map(function(u){
                 if (!u || !u.id) return null;
-                var isSelected = selIBM === u.id;
-                var isQueued   = linked.some(function(l){ return l.ibmId === u.id; });
+                var isSelected  = selIBM === u.id;
+                var isQueued    = linked.some(function(l){ return l.ibmId === u.id; });
+                var isDelinked  = delinked.indexOf(u.id) !== -1;
                 return (
                   <div key={u.id}
-                    onClick={function(){ if (!isQueued || ibmTab==="matched") { setSelIBM(isSelected ? null : u.id); setSelClarity(null); setClaritySearch(""); } }}
-                    style={{padding:"11px 16px",borderBottom:"1px solid "+IBM.gray20,cursor:isQueued&&ibmTab==="unmatched"?"default":"pointer",
-                      background:isQueued?IBM.green10:isSelected?IBM.blue10:"#fff",
-                      borderLeft:isQueued?"3px solid "+IBM.green50:isSelected?"3px solid "+IBM.blue60:"3px solid transparent",
+                    onClick={function(){ if (isDelinked) return; if (!isQueued || ibmTab==="matched") { setSelIBM(isSelected ? null : u.id); setSelClarity(null); setClaritySearch(""); } }}
+                    style={{padding:"11px 16px",borderBottom:"1px solid "+IBM.gray20,cursor:isDelinked||isQueued&&ibmTab==="unmatched"?"default":"pointer",
+                      background:isDelinked?"#fff5f5":isQueued?IBM.green10:isSelected?IBM.blue10:"#fff",
+                      borderLeft:isDelinked?"3px solid "+IBM.red60:isQueued?"3px solid "+IBM.green50:isSelected?"3px solid "+IBM.blue60:"3px solid transparent",
                       transition:"background 0.1s"}}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
                       <div style={{flex:1,minWidth:0}}>
@@ -3114,9 +3148,24 @@ function NameMatchPanel({users, setUsers, savedClarityRecs, onClose}) {
                         {ibmTab==="unmatched"?"IBM":"AUTO"}
                       </span>
                     </div>
-                    {isSelected && !isQueued && (
+                    {isSelected && !isQueued && ibmTab === "unmatched" && (
                       <div style={{fontSize:11,color:IBM.blue60,marginTop:5,fontWeight:600}}>
                         &#8594; Now select the correct Clarity name on the right
+                      </div>
+                    )}
+                    {isSelected && !isQueued && ibmTab === "matched" && (
+                      <div style={{marginTop:6,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                        <span style={{fontSize:11,color:IBM.orange40,fontWeight:600}}>&#8594; Select a new Clarity name, or:</span>
+                        <button
+                          onClick={function(e){
+                            e.stopPropagation();
+                            setDelinked(function(p){ return p.indexOf(u.id)===-1 ? p.concat([u.id]) : p; });
+                            setSelIBM(null);
+                            setSelClarity(null);
+                          }}
+                          style={{padding:"3px 10px",background:IBM.red60,color:"#fff",border:"none",cursor:"pointer",fontSize:11,fontWeight:700}}>
+                          &#x2715; De-link (set IBM only)
+                        </button>
                       </div>
                     )}
                     {isQueued && (
@@ -3126,6 +3175,13 @@ function NameMatchPanel({users, setUsers, savedClarityRecs, onClose}) {
                         </span>
                         <button onClick={function(e){ e.stopPropagation(); removeLink(u.id); }}
                           style={{background:"none",border:"1px solid "+IBM.red60,color:IBM.red60,padding:"2px 8px",cursor:"pointer",fontSize:10}}>Undo</button>
+                      </div>
+                    )}
+                    {isDelinked && (
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:4}}>
+                        <span style={{fontSize:11,color:IBM.red60,fontWeight:600}}>&#x2715; Will be set to IBM only</span>
+                        <button onClick={function(e){ e.stopPropagation(); setDelinked(function(p){ return p.filter(function(x){ return x!==u.id; }); }); }}
+                          style={{background:"none",border:"1px solid "+IBM.gray40,color:IBM.gray60,padding:"2px 8px",cursor:"pointer",fontSize:10}}>Undo</button>
                       </div>
                     )}
                   </div>
