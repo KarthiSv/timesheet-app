@@ -2853,15 +2853,10 @@ function NameMatchPanel({users, setUsers, savedClarityRecs, onClose}) {
 
   var activeIbmList = ibmTab === "unmatched" ? ibmOnly : bothMatched;
 
-  // Always guard: ibmRec/clarityRec could be undefined if id no longer in list
-  var ibmRec     = selIBM     ? (users.find(function(u){ return u.id === selIBM; }) || null) : null;
-  var clarityRec = selClarity ? (clarityPool.find(function(c){ return c.id === selClarity; }) || null) : null;
-
-  // If selection became stale, clear it
-  if (selIBM && !ibmRec)         { setTimeout(function(){ setSelIBM(null); }, 0); }
-  if (selClarity && !clarityRec) { setTimeout(function(){ setSelClarity(null); }, 0); }
-
   var ibmTab_isMatched = ibmTab === "matched";
+
+  // Always guard: ibmRec could be undefined if id no longer in list
+  var ibmRec = selIBM ? (users.find(function(u){ return u.id === selIBM; }) || null) : null;
 
   // Build clarity pool with normalized shape { id, name, clarityName, entered, timesheetStatus, resourceManager }
   var clarityPoolNorm = allClaritySource.map(function(c){
@@ -2883,6 +2878,13 @@ function NameMatchPanel({users, setUsers, savedClarityRecs, onClose}) {
   var clarityPool = ibmTab_isMatched
     ? clarityPoolNorm.filter(function(c){ return c.id !== selIBM; })
     : clarityPoolNorm; // show ALL for unmatched too — let user pick any Clarity name
+
+  // clarityRec must be declared AFTER clarityPool is defined above
+  var clarityRec = selClarity ? (clarityPool.find(function(c){ return c.id === selClarity; }) || null) : null;
+
+  // If selection became stale, clear it
+  if (selIBM && !ibmRec)         { setTimeout(function(){ setSelIBM(null); }, 0); }
+  if (selClarity && !clarityRec) { setTimeout(function(){ setSelClarity(null); }, 0); }
 
   const[claritySearch, setClaritySearch] = useState("");
 
