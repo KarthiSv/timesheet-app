@@ -3240,6 +3240,8 @@ function NameMatchPanel({users, setUsers, savedClarityRecs, onClose}) {
                   fuzzyMatchScore(ibmRec.name, existingIBMName) < 0.9);
                 var isBlocked = alreadyLinked || blockedByDifferentName;
                 var barColor = pct >= 85 ? IBM.green50 : pct >= 55 ? IBM.orange40 : IBM.gray40;
+                var canInlineConfirm = selIBM && !isBlocked && !alreadyLinked &&
+                  !(existingIBMName && ibmRec && fuzzyMatchScore(ibmRec.name, existingIBMName) < 0.9);
                 return (
                   <div key={c.id}
                     onClick={function(){ if (!isBlocked && selIBM) setSelClarity(isSelected ? null : c.id); }}
@@ -3270,7 +3272,21 @@ function NameMatchPanel({users, setUsers, savedClarityRecs, onClose}) {
                           </div>
                         )}
                       </div>
-                      <span style={{fontSize:9,background:IBM.purple10,color:IBM.purple60,padding:"2px 6px",border:"1px solid #d4bbff",fontWeight:700,flexShrink:0}}>Clarity</span>
+                      <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:6,flexShrink:0}}>
+                        <span style={{fontSize:9,background:IBM.purple10,color:IBM.purple60,padding:"2px 6px",border:"1px solid #d4bbff",fontWeight:700}}>Clarity</span>
+                        {/* Inline confirm button — appears when this row is selected */}
+                        {isSelected && canInlineConfirm && (
+                          <button
+                            onClick={function(e){
+                              e.stopPropagation();
+                              // selClarity is already set (this row is selected), just call addLink
+                              addLink();
+                            }}
+                            style={{padding:"5px 10px",background:IBM.orange40,color:"#fff",border:"none",cursor:"pointer",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>
+                            &#10003; Confirm Link
+                          </button>
+                        )}
+                      </div>
                     </div>
                     {alreadyLinked && !blockedByDifferentName && <div style={{fontSize:10,color:IBM.gray50,marginTop:3}}>Already linked to another IBM record</div>}
                     {blockedByDifferentName && <div style={{fontSize:10,color:IBM.red60,marginTop:3,fontWeight:600}}>&#9888; Already matched to <b>{existingIBMName}</b> — different name</div>}
@@ -4005,45 +4021,73 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
       {/* DASHBOARD */}
       {activeTab==="dashboard"&&(
         <React.Fragment>
-          <div className="dash-variance-bar" style={{margin:"0 28px 1px",background:IBM.gray100,padding:"14px 20px",display:"flex",alignItems:"center",gap:20,flexWrap:"wrap"}}>
+          <div className="dash-variance-bar" style={{margin:"0 28px 1px",background:IBM.gray100,padding:"14px 20px",display:"flex",alignItems:"center",gap:0,flexWrap:"wrap"}}>
             {(function(){
-              var totalSched=users.reduce(function(s,u){return s+(Number(u.scheduled)||0);},0);
               var _amk = selMonth + "-" + selYear;
-              var totalActual = showAllMonths
-                ? users.reduce(function(s,u){return s+(Number(u.entered)||0);},0)
-                : users.reduce(function(s,u){
-                    var mh = u.monthlyHours || {};
-                    return s + (mh[_amk] || Number(u.entered) || 0);
-                  },0);
-              var totalVar=totalSched-totalActual;
-              var varPct=totalSched>0?Math.min(Math.round((totalActual/totalSched)*100),100):0;
-              var varColor=totalVar===0?IBM.green50:totalVar>0?IBM.red60:IBM.orange40;
-              var varLabel=totalVar===0?"On Track":totalVar>0?"Under-reported":"Over-reported";
-              var varDisplay=totalVar===0?"0h":(totalVar>0?"-":"+")+(Math.abs(totalVar))+"h";
-              return [
-                <div key="v" style={{display:"flex",alignItems:"baseline",gap:8}}>
-                  <span style={{fontSize:38,fontWeight:300,color:varColor}}>{varDisplay}</span>
-                  <span style={{fontSize:13,color:"#a6c8ff"}}>total variance</span>
-                </div>,
-                <div key="d1" style={{width:1,height:36,background:IBM.gray80}}/>,
-                <div key="s">
-                  <div style={{fontSize:10,color:IBM.gray30,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:3}}>Status</div>
-                  <span style={{fontSize:13,fontWeight:700,color:varColor}}>{varLabel}</span>
-                </div>,
-                <div key="d2" style={{width:1,height:36,background:IBM.gray80}}/>,
-                <div key="h">
-                  <div style={{fontSize:10,color:IBM.gray30,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:3}}>Scheduled vs Actual</div>
-                  <div style={{fontSize:13,color:"#fff"}}>{totalSched}h scheduled &nbsp;&#8226;&nbsp; {totalActual}h actual</div>
-                </div>,
-                <div key="bar" style={{flex:1,minWidth:160}}>
-                  <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:IBM.gray50,marginBottom:4}}>
-                    <span>Actual vs Scheduled</span><span>{varPct}%</span>
+              // Only matched (Both) records for variance — IBM-only/Clarity-only are separate buckets
+              var matchedUsers = users.filter(function(u){ return u.dataSource === "Both"; });
+              var ibmOnlyUsers = users.filter(function(u){ return u.dataSource === "IBM only"; });
+              var clarityOnlyUsers = users.filter(function(u){ return u.dataSource === "Clarity only"; });
+              var mismatchUsers = matchedUsers.filter(function(u){ return getStatus(u) === "yellow"; });
+
+              var matchedSched  = matchedUsers.reduce(function(s,u){ return s+(Number(u.scheduled)||0); }, 0);
+              var matchedActual = showAllMonths
+                ? matchedUsers.reduce(function(s,u){ return s+(Number(u.entered)||0); }, 0)
+                : matchedUsers.reduce(function(s,u){ var mh=u.monthlyHours||{}; return s+(mh[_amk]||Number(u.entered)||0); }, 0);
+              var matchedVar = matchedSched - matchedActual;
+              var varPct = matchedSched > 0 ? Math.min(Math.round((matchedActual/matchedSched)*100),100) : 0;
+              var varColor = matchedVar === 0 ? IBM.green50 : matchedVar > 0 ? IBM.red60 : IBM.orange40;
+              var varLabel = matchedVar === 0 ? "On Track" : matchedVar > 0 ? "Under-reported" : "Over-reported";
+              var varDisplay = matchedVar === 0 ? "0h" : (matchedVar > 0 ? "-" : "+") + Math.abs(matchedVar) + "h";
+
+              function jumpToRecords(status, source) {
+                setActiveTab("records");
+                if (status) setFilterStatus(status);
+                if (source) setFilterSource(source);
+              }
+
+              return (
+                <React.Fragment>
+                  {/* Bucket 1: Mismatch variance (matched records only) */}
+                  <div style={{flex:"1 1 260px",paddingRight:20,borderRight:"1px solid "+IBM.gray80}}>
+                    <div style={{fontSize:10,color:IBM.gray30,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:4}}>
+                      Matched Records Variance
+                      <span style={{marginLeft:8,fontWeight:400,fontSize:10,color:IBM.gray50}}>({matchedUsers.length} matched · {mismatchUsers.length} with gap)</span>
+                    </div>
+                    <div style={{display:"flex",alignItems:"baseline",gap:10,flexWrap:"wrap"}}>
+                      <button onClick={function(){ jumpToRecords("yellow","Both"); }}
+                        style={{background:"none",border:"none",padding:0,cursor:"pointer",display:"flex",alignItems:"baseline",gap:8}}>
+                        <span style={{fontSize:36,fontWeight:300,color:varColor,lineHeight:1}}>{varDisplay}</span>
+                        <span style={{fontSize:12,color:varColor,fontWeight:600}}>{varLabel}</span>
+                      </button>
+                    </div>
+                    <div style={{marginTop:6,display:"flex",alignItems:"center",gap:8}}>
+                      <div style={{flex:1,height:5,background:IBM.gray80,overflow:"hidden"}}>
+                        <div style={{height:"100%",width:varPct+"%",background:matchedActual>=matchedSched?IBM.green50:IBM.orange40,transition:"width 0.3s"}}/>
+                      </div>
+                      <span style={{fontSize:11,color:IBM.gray30,whiteSpace:"nowrap"}}>{matchedSched}h sched · {matchedActual}h actual · {varPct}%</span>
+                    </div>
                   </div>
-                  <div style={{height:6,background:IBM.gray80,overflow:"hidden"}}>
-                    <div style={{height:"100%",width:varPct+"%",background:totalActual>=totalSched?IBM.green50:IBM.orange40}}/>
+
+                  {/* Bucket 2: IBM only (scheduled, no Clarity) */}
+                  <div style={{flex:"0 0 auto",padding:"0 24px",borderRight:"1px solid "+IBM.gray80,cursor:"pointer"}}
+                    onClick={function(){ jumpToRecords("all","IBM only"); }}>
+                    <div style={{fontSize:10,color:IBM.gray30,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:4}}>IBM Only</div>
+                    <div style={{fontSize:36,fontWeight:300,color:IBM.orange40,lineHeight:1}}>{ibmOnlyUsers.length}</div>
+                    <div style={{fontSize:11,color:IBM.gray50,marginTop:4}}>in IBM · no Clarity</div>
+                    <div style={{fontSize:10,color:IBM.blue60,marginTop:3,fontWeight:600}}>Click to filter ↗</div>
                   </div>
-                </div>
-              ];
+
+                  {/* Bucket 3: Clarity only (actual hours, no IBM schedule) */}
+                  <div style={{flex:"0 0 auto",padding:"0 24px",cursor:"pointer"}}
+                    onClick={function(){ jumpToRecords("all","Clarity only"); }}>
+                    <div style={{fontSize:10,color:IBM.gray30,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:4}}>Clarity Only</div>
+                    <div style={{fontSize:36,fontWeight:300,color:IBM.purple60,lineHeight:1}}>{clarityOnlyUsers.length}</div>
+                    <div style={{fontSize:11,color:IBM.gray50,marginTop:4}}>in Clarity · no IBM</div>
+                    <div style={{fontSize:10,color:IBM.blue60,marginTop:3,fontWeight:600}}>Click to filter ↗</div>
+                  </div>
+                </React.Fragment>
+              );
             })()}
           </div>
           <div className="dash-stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:1,background:IBM.gray20,margin:"0 28px",border:"1px solid "+IBM.gray20}}>
@@ -4058,17 +4102,20 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
                 : users.reduce(function(s,u){return s+((u.monthlyHours||{})[_amk2] || Number(u.entered) || 0);},0);
               var monthLabel2 = showAllMonths ? "All Months" : selMonth;
               var cards=[
-                {l:"Total People",v:total,c:IBM.blue60},
-                {l:"Matched",v:matchedCount,c:IBM.green50},
+                {l:"Total People",v:total,c:IBM.blue60,onClick:function(){setActiveTab("records");setFilterStatus("all");setFilterSource("all");}},
+                {l:"Matched",v:matchedCount,c:IBM.green50,onClick:function(){setActiveTab("records");setFilterStatus("all");setFilterSource("Both");}},
                 {l:"IBM Scheduled",v:users.reduce(function(s,u){return s+(Number(u.scheduled)||0);},0)+"h",c:IBM.blue60},
                 {l:monthLabel2+" Actual",v:monthActual+"h",c:monthActual>0?IBM.purple60:IBM.gray50},
-                {l:"IBM Only",v:ibmOnlyCount,c:IBM.orange40},
-                {l:"Clarity Only",v:clarityOnlyCount,c:IBM.purple60}
+                {l:"IBM Only",v:ibmOnlyCount,c:IBM.orange40,onClick:function(){setActiveTab("records");setFilterStatus("all");setFilterSource("IBM only");}},
+                {l:"Clarity Only",v:clarityOnlyCount,c:IBM.purple60,onClick:function(){setActiveTab("records");setFilterStatus("all");setFilterSource("Clarity only");}}
               ];
               return cards.map(function(card){
-                return <div key={card.l} style={{background:"#fff",padding:"16px 20px",borderTop:"3px solid "+card.c}}>
+                return <div key={card.l}
+                  onClick={card.onClick||undefined}
+                  style={{background:"#fff",padding:"16px 20px",borderTop:"3px solid "+card.c,cursor:card.onClick?"pointer":"default"}}>
                   <div style={{fontSize:28,fontWeight:300,color:card.c,letterSpacing:"-0.5px"}}>{card.v}</div>
                   <div style={{fontSize:11,color:IBM.gray60,marginTop:5,textTransform:"uppercase",letterSpacing:"0.09em",fontWeight:500}}>{card.l}</div>
+                  {card.onClick&&<div style={{fontSize:10,color:IBM.blue60,marginTop:3,fontWeight:600}}>Click to filter ↗</div>}
                 </div>;
               });
             })()}
