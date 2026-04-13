@@ -268,7 +268,7 @@ function getStatus(u){
   var e=Number(u.entered)||0, s=Number(u.scheduled)||0;
   if(u.dataSource==="Clarity only") return "purple"; // separate category
   if(e===0) return "red";
-  if(e<s) return "yellow";
+  if(e!==s) return "yellow"; // any variance (over or under) = Mismatch
   return "green";
 }
 const STATUS_META={green:{label:"Complete",color:IBM.green50,bg:IBM.green10,glow:"#24a14855"},yellow:{label:"Mismatch",color:"#8e6a00",bg:IBM.yellow10,glow:"#f1c21b55"},red:{label:"Missing",color:IBM.red60,bg:IBM.red10,glow:"#da1e2855"},purple:{label:"No IBM Schedule",color:IBM.purple60,bg:IBM.purple10,glow:"#6929c433"}};
@@ -3673,6 +3673,56 @@ function UserManagementTab({session, showToast}) {
 }
 
 
+// ─── CHANGE PASSWORD PANEL (proper component to satisfy Rules of Hooks) ───────
+function ChangePasswordPanel({session}) {
+  const[ownPw,     setOwnPw]     = useState("");
+  const[ownPw2,    setOwnPw2]    = useState("");
+  const[ownPwErr,  setOwnPwErr]  = useState("");
+  const[ownPwOk,   setOwnPwOk]   = useState(false);
+  const[ownPwSaving,setOwnPwSaving] = useState(false);
+
+  async function handleOwnPw(){
+    setOwnPwErr("");
+    if(!ownPw){setOwnPwErr("Enter a new password.");return;}
+    if(ownPw.length<8){setOwnPwErr("Password must be at least 8 characters.");return;}
+    if(ownPw!==ownPw2){setOwnPwErr("Passwords do not match.");return;}
+    setOwnPwSaving(true);
+    try {
+      var allUsers=await getAllUsers();
+      var me=allUsers.find(function(u){return u.username===session.username;});
+      if(!me){setOwnPwErr("User not found.");setOwnPwSaving(false);return;}
+      var hashed=await hashPassword(session.username,ownPw);
+      await updateUser(me.id,{password_hash:hashed});
+      setOwnPwOk(true);setOwnPw("");setOwnPw2("");
+      setTimeout(function(){setOwnPwOk(false);},3000);
+    } catch(ex){ setOwnPwErr(ex.message||"Failed"); }
+    setOwnPwSaving(false);
+  }
+  return (
+    <div style={{background:"#fff",border:"1px solid "+IBM.gray20,marginBottom:20}}>
+      <div style={{background:IBM.orange40,color:"#fff",padding:"12px 20px",fontSize:13,fontWeight:600}}>&#128274; Change Your Password</div>
+      <div style={{padding:"18px 20px",display:"flex",gap:14,flexWrap:"wrap",alignItems:"flex-end"}}>
+        <div>
+          <label style={{fontSize:11,fontWeight:600,textTransform:"uppercase",color:IBM.gray70,display:"block",marginBottom:5,letterSpacing:"0.07em"}}>New Password</label>
+          <input type="password" value={ownPw} onChange={function(e){setOwnPw(e.target.value);setOwnPwErr("");}} placeholder="Min 8 characters"
+            style={{padding:"8px 12px",border:"1px solid "+IBM.gray30,fontSize:13,outline:"none",width:200}}/>
+        </div>
+        <div>
+          <label style={{fontSize:11,fontWeight:600,textTransform:"uppercase",color:IBM.gray70,display:"block",marginBottom:5,letterSpacing:"0.07em"}}>Confirm</label>
+          <input type="password" value={ownPw2} onChange={function(e){setOwnPw2(e.target.value);setOwnPwErr("");}} placeholder="Re-enter"
+            style={{padding:"8px 12px",border:"1px solid "+IBM.gray30,fontSize:13,outline:"none",width:200}}/>
+        </div>
+        <button onClick={handleOwnPw} disabled={ownPwSaving}
+          style={{padding:"9px 18px",background:ownPwSaving?IBM.gray30:IBM.orange40,color:"#fff",border:"none",cursor:"pointer",fontSize:13,fontWeight:600,flexShrink:0}}>
+          {ownPwSaving?"Saving…":"Update Password"}
+        </button>
+      </div>
+      {ownPwErr&&<div style={{margin:"0 20px 14px",padding:"8px 12px",background:"#fff1f1",border:"1px solid #ffb3b8",color:IBM.red60,fontSize:12}}>&#9888; {ownPwErr}</div>}
+      {ownPwOk&&<div style={{margin:"0 20px 14px",padding:"8px 12px",background:IBM.green10,border:"1px solid "+IBM.green20,color:IBM.green50,fontSize:12,fontWeight:600}}>&#10003; Password updated successfully!</div>}
+    </div>
+  );
+}
+
 // ─── MANAGER APP ──────────────────────────────────────────────────────────────
 function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarEvents}){
   const now=new Date();
@@ -4189,15 +4239,15 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
             {/* Row 1: Status chips + search + sort + actions */}
             <div className="filter-row1" style={{display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:8,marginBottom:8,alignItems:"center"}}>
               <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
-                {[["all","All",IBM.gray80],["green","Complete",IBM.green50],["yellow","Mismatch",IBM.yellow30],["red","Missing",IBM.red60],["purple","No IBM Sched",IBM.purple60]].map(function(item){
+                {[["all","All",IBM.gray80],["green","Complete",IBM.green50],["yellow","Mismatch",IBM.yellow30]].map(function(item){
                   var v=item[0],l=item[1],c=item[2];
                   return <button key={v} onClick={function(){setFilterStatus(v);}} style={{padding:"4px 10px",border:"1px solid "+(filterStatus===v?c:IBM.gray20),background:filterStatus===v?c:"#fff",color:filterStatus===v?(c===IBM.yellow30?IBM.gray100:"#fff"):IBM.gray70,cursor:"pointer",fontSize:11,fontWeight:600}}>{l}</button>;
                 })}
                 <span style={{width:1,height:16,background:IBM.gray20,flexShrink:0}}/>
                 {/* Source filter */}
-                {[["all","All Sources"],["Both","Matched"],["IBM only","IBM Only"],["Clarity only","Clarity Only"]].map(function(item){
+                {[["all","All Sources"],["IBM only","IBM Only"],["Clarity only","Clarity Only"]].map(function(item){
                   var v=item[0],l=item[1];
-                  var c=v==="Both"?IBM.green50:v==="IBM only"?IBM.blue60:v==="Clarity only"?IBM.purple60:IBM.gray70;
+                  var c=v==="IBM only"?IBM.blue60:v==="Clarity only"?IBM.purple60:IBM.gray70;
                   return <button key={v} onClick={function(){setFilterSource(v);}} style={{padding:"4px 10px",border:"1px solid "+(filterSource===v?c:IBM.gray20),background:filterSource===v?c:"#fff",color:filterSource===v?"#fff":IBM.gray70,cursor:"pointer",fontSize:11,fontWeight:600}}>{l}</button>;
                 })}
                 <span style={{width:1,height:16,background:IBM.gray20,flexShrink:0}}/>
@@ -4278,7 +4328,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
               <thead><tr>{["","","Name","Source","WBS / Talent ID","Dept / Country","Resource Mgr","Workitems","Scheduled","Actual Hrs","Variance","Status","Billing Code","Actions"].map(function(h){ return <th key={h} className={(h==="Billing Code"||h==="Workitems")?"col-hide-mobile":""} style={TH}>{h}</th>; })}</tr></thead>
               <tbody>
                 {filtered.map((u,idx)=>{
-                  const alt=idx%2,st=getStatus(u),diff=Number(u.scheduled)-Number(u.entered);
+                  const alt=idx%2,st=getStatus(u),diff=Number(u.scheduled)-Number(u.entered),absDiff=Math.abs(diff);
                   const mk2=monthKey(selMonth,selYear);
                   const hasNotes=(u.monthlyEntries && u.monthlyEntries[mk2] && u.monthlyEntries[mk2].periodNotes && u.monthlyEntries[mk2].periodNotes.P1)||(u.monthlyEntries && u.monthlyEntries[mk2] && u.monthlyEntries[mk2].periodNotes && u.monthlyEntries[mk2].periodNotes.P2);
                   // Show live entered hours for current month if available
@@ -4390,7 +4440,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
                           :u.entered===0?<span style={{color:IBM.red60,fontWeight:700}}>—</span>:u.entered+"h"
                         }
                       </td>
-                      <td style={Object.assign({},TD(alt),{textAlign:"right",color:diff===0?IBM.green50:diff>20?IBM.red60:IBM.orange40,fontWeight:diff>0?700:400})}>{diff===0?"✓":"-"+diff+"h"}</td>
+                      <td style={Object.assign({},TD(alt),{textAlign:"right",color:diff===0?IBM.green50:absDiff>20?IBM.red60:IBM.orange40,fontWeight:diff!==0?700:400})}>{diff===0?"✓":(diff>0?"-":"+")+(absDiff)+"h"}</td>
                       <td style={TD(alt)}>
                         {u.timesheetStatus
                           ?<span style={{fontSize:10,padding:"2px 6px",fontWeight:600,
@@ -4425,54 +4475,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
 
       {activeTab==="profile"&&(
         <div style={{padding:"28px",maxWidth:800}}>
-          {/* Change own password */}
-          {(function(){
-            var[ownPw,setOwnPw]=React.useState("");
-            var[ownPw2,setOwnPw2]=React.useState("");
-            var[ownPwErr,setOwnPwErr]=React.useState("");
-            var[ownPwOk,setOwnPwOk]=React.useState(false);
-            var[ownPwSaving,setOwnPwSaving]=React.useState(false);
-            async function handleOwnPw(){
-              setOwnPwErr("");
-              if(!ownPw){setOwnPwErr("Enter a new password.");return;}
-              if(ownPw.length<8){setOwnPwErr("Password must be at least 8 characters.");return;}
-              if(ownPw!==ownPw2){setOwnPwErr("Passwords do not match.");return;}
-              setOwnPwSaving(true);
-              try {
-                var users=await getAllUsers();
-                var me=users.find(function(u){return u.username===session.username;});
-                if(!me){setOwnPwErr("User not found.");setOwnPwSaving(false);return;}
-                var hashed=await hashPassword(session.username,ownPw);
-                await updateUser(me.id,{password_hash:hashed});
-                setOwnPwOk(true);setOwnPw("");setOwnPw2("");
-                setTimeout(function(){setOwnPwOk(false);},3000);
-              } catch(ex){ setOwnPwErr(ex.message||"Failed"); }
-              setOwnPwSaving(false);
-            }
-            return (
-              <div style={{background:"#fff",border:"1px solid "+IBM.gray20,marginBottom:20}}>
-                <div style={{background:IBM.orange40,color:"#fff",padding:"12px 20px",fontSize:13,fontWeight:600}}>&#128274; Change Your Password</div>
-                <div style={{padding:"18px 20px",display:"flex",gap:14,flexWrap:"wrap",alignItems:"flex-end"}}>
-                  <div>
-                    <label style={{fontSize:11,fontWeight:600,textTransform:"uppercase",color:IBM.gray70,display:"block",marginBottom:5,letterSpacing:"0.07em"}}>New Password</label>
-                    <input type="password" value={ownPw} onChange={function(e){setOwnPw(e.target.value);setOwnPwErr("");}} placeholder="Min 8 characters"
-                      style={{padding:"8px 12px",border:"1px solid "+IBM.gray30,fontSize:13,outline:"none",width:200}}/>
-                  </div>
-                  <div>
-                    <label style={{fontSize:11,fontWeight:600,textTransform:"uppercase",color:IBM.gray70,display:"block",marginBottom:5,letterSpacing:"0.07em"}}>Confirm</label>
-                    <input type="password" value={ownPw2} onChange={function(e){setOwnPw2(e.target.value);setOwnPwErr("");}} placeholder="Re-enter"
-                      style={{padding:"8px 12px",border:"1px solid "+IBM.gray30,fontSize:13,outline:"none",width:200}}/>
-                  </div>
-                  <button onClick={handleOwnPw} disabled={ownPwSaving}
-                    style={{padding:"9px 18px",background:ownPwSaving?IBM.gray30:IBM.orange40,color:"#fff",border:"none",cursor:"pointer",fontSize:13,fontWeight:600,flexShrink:0}}>
-                    {ownPwSaving?"Saving…":"Update Password"}
-                  </button>
-                </div>
-                {ownPwErr&&<div style={{margin:"0 20px 14px",padding:"8px 12px",background:"#fff1f1",border:"1px solid #ffb3b8",color:IBM.red60,fontSize:12}}>&#9888; {ownPwErr}</div>}
-                {ownPwOk&&<div style={{margin:"0 20px 14px",padding:"8px 12px",background:IBM.green10,border:"1px solid "+IBM.green20,color:IBM.green50,fontSize:12,fontWeight:600}}>&#10003; Password updated successfully!</div>}
-              </div>
-            );
-          })()}
+          <ChangePasswordPanel session={session}/>
           <div style={{background:"#fff",border:`1px solid ${IBM.gray20}`,marginBottom:20}}>
             <div style={{background:IBM.gray100,color:"#fff",padding:"14px 20px",display:"flex",alignItems:"center",gap:12}}>
               <div style={{width:36,height:36,borderRadius:"50%",background:"#5b5ea6",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:700,color:"#fff"}}>{mgrName?mgrName.split(" ").map(n=>n[0]).join("").slice(0,2):"M"}</div>
