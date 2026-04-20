@@ -1388,7 +1388,13 @@ function EmployeeDetailPanel({userId,users,monthLabel,periodLabel,onFixEntry,onS
                               <div key={wi} title={"W/E "+w.weekEnd+": "+w.total+"h"} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
                                 <div style={{fontSize:8,color:IBM.blue60,fontWeight:700}}>{w.total||0}</div>
                                 <div style={{width:"100%",background:IBM.blue60,height:barH+"px",minHeight:2}}/>
-                                <div style={{fontSize:7,color:IBM.gray50,textAlign:"center",lineHeight:1}}>{w.weekEnd?w.weekEnd.slice(0,5):""}</div>
+                                <div style={{fontSize:7,color:IBM.gray50,textAlign:"center",lineHeight:1}}>{(function(){
+                                  if(!w.weekEnd) return "";
+                                  // "DD-Mon-YYYY" → show "Mon DD"
+                                  var p=w.weekEnd.split("-");
+                                  if(p.length===3 && p[1].length===3) return p[1]+" "+parseInt(p[0]);
+                                  return w.weekEnd.slice(0,5);
+                                })()}</div>
                               </div>
                             );
                           })}
@@ -1727,6 +1733,27 @@ function parseIBMFile(wb) {
   var rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
   if (!rows.length) return { error: "Sheet '" + sheetName + "' is empty." };
 
+  // Convert an Excel date serial number to a "DD-Mon-YYYY" string.
+  // Excel epoch = Dec 30 1899; JS epoch = Jan 1 1970 → offset = 25569 days.
+  // Valid IBM sheet serials are roughly 40000-60000 (year ~2009–2064).
+  function excelSerialToDateStr(serial) {
+    var MN = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    var d = new Date((serial - 25569) * 86400000);
+    var dd  = String(d.getUTCDate()).padStart(2,"0");
+    var mmm = MN[d.getUTCMonth()];
+    var yyyy = d.getUTCFullYear();
+    return dd + "-" + mmm + "-" + yyyy;
+  }
+  function normaliseWeDate(raw) {
+    if (!raw) return raw;
+    var n = Number(raw);
+    // If the value is a 5-digit integer in the plausible Excel-date range, convert it.
+    if (!isNaN(n) && n >= 40000 && n <= 60000 && String(raw).trim() === String(Math.floor(n))) {
+      return excelSerialToDateStr(Math.floor(n));
+    }
+    return raw;
+  }
+
   function claimMonthLabel(cm) {
     var n = parseInt(cm);
     var MN = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -1767,8 +1794,8 @@ function parseIBMFile(wb) {
     var wed = parseFloat(getCol(row, ["wed hours","wed"]) || 0) || 0;
     var thu = parseFloat(getCol(row, ["thu hours","thu"]) || 0) || 0;
     var fri = parseFloat(getCol(row, ["fri hours","fri"]) || 0) || 0;
-    var we  = String(getCol(row, ["hours performed for w/e","w/e","week end","week ending"]) || "").trim();
-    var cm  = String(getCol(row, ["claim month"]) || "").trim();
+    var we  = normaliseWeDate(String(getCol(row, ["hours performed for w/e","w/e","week end","week ending"]) || "").trim());
+    var cm  = normaliseWeDate(String(getCol(row, ["claim month"]) || "").trim());
     var wi  = String(getCol(row, ["workitem title","workitem"]) || "").trim();
     var ac  = String(getCol(row, ["activity code"]) || "").trim();
     byName[key].scheduledHours += hrs;
