@@ -1779,7 +1779,7 @@ function parseIBMFile(wb) {
         serialId: String(getCol(row, ["resource talentid (serial)","serial"]) || ""),
         country: String(getCol(row, ["resource country name","country"]) || ""),
         billingCode: String(getCol(row, ["billing code"]) || ""),
-        wbsId: String(getCol(row, ["ippf customer wbs id","wbs"]) || ""),
+        wbsId: String(getCol(row, ["wbs id","original account id","ippf customer wbs id","wbs short","wbs"]) || ""),
         activityCode: String(getCol(row, ["activity code"]) || ""),
         scheduledHours: 0, workitems: [], claimMonths: [],
         satHrs:0, sunHrs:0, monHrs:0, tueHrs:0, wedHrs:0, thuHrs:0, friHrs:0,
@@ -1845,7 +1845,7 @@ function parseIBMFile(wb) {
     }
     if (cm) { if (byName[key].claimMonths.indexOf(monthYearKey) === -1) byName[key].claimMonths.push(monthYearKey); }
     if (!byName[key].email) byName[key].email = String(getCol(row, ["internet address"]) || "");
-    if (!byName[key].wbsId) byName[key].wbsId = String(getCol(row, ["ippf customer wbs id","wbs"]) || "");
+    if (!byName[key].wbsId) byName[key].wbsId = String(getCol(row, ["wbs id","original account id","ippf customer wbs id","wbs short","wbs"]) || "");
     if (!byName[key].billingCode) byName[key].billingCode = String(getCol(row, ["billing code"]) || "");
     if (!byName[key].country) byName[key].country = String(getCol(row, ["resource country name","country"]) || "");
     if (!byName[key].talentId) byName[key].talentId = String(getCol(row, ["talentid (cnum)","cnum"]) || "");
@@ -4445,7 +4445,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
                         </span>
                       </td>
                       <td style={TD(alt)}>
-                        {u.wbsId&&<div style={{fontSize:11,color:IBM.gray70,marginBottom:2}}><b>WBS:</b> {u.wbsId}</div>}
+                        {u.wbsId&&<div style={{marginBottom:3}}>{u.wbsId.split(", ").map(function(w,wi){return(<span key={wi} style={{display:"inline-block",fontSize:11,fontWeight:700,background:IBM.blue10,color:IBM.blue60,border:"1px solid "+IBM.blue20,borderRadius:3,padding:"1px 6px",marginRight:3,marginBottom:2}}>{w}</span>);})}</div>}
                         {u.talentId&&<div style={{fontSize:11,color:IBM.gray60}}><b>TID:</b> {u.talentId}</div>}
                         {!u.wbsId&&!u.talentId&&<span style={{color:IBM.gray30,fontSize:12}}>—</span>}
                       </td>
