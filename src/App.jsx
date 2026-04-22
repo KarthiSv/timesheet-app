@@ -396,6 +396,44 @@ function buildNotifTemplate(user,status,mL,pL){
 function genNotifForUser(u,mL,pL){return buildNotifTemplate(u,getStatus(u),mL,pL);}
 function genBulkNotifs(targets,mL,pL,onP){const r={};targets.forEach((u,i)=>{r[u.id]=buildNotifTemplate(u,getStatus(u),mL,pL);onP(i+1,targets.length,u.name);});return r;}
 
+// ─── EMAIL DRAFT HELPERS ──────────────────────────────────────────────────────
+// Open default mail client (Outlook on Windows) with prefilled To/Subject/Body.
+function buildMailtoUrl(to, subject, body){
+  return "mailto:"+encodeURIComponent(to||"")+"?subject="+encodeURIComponent(subject||"")+"&body="+encodeURIComponent(body||"");
+}
+function openMailtoLink(url){
+  var a=document.createElement("a");
+  a.href=url; a.style.display="none";
+  document.body.appendChild(a); a.click();
+  setTimeout(function(){ if(a.parentNode) a.parentNode.removeChild(a); },100);
+}
+// Build an RFC-5322 .eml draft. The "X-Unsent: 1" header tells Outlook to open
+// it as a draft (editable, not a received message). Double-click the file or
+// drag into the Outlook Drafts folder to bulk-stage them for sending.
+function buildEmlDraft(toEmail, toName, subject, body){
+  var nl="\r\n";
+  var toHeader = toName ? ('"'+String(toName).replace(/"/g,"")+'" <'+(toEmail||"")+'>') : (toEmail||"");
+  return [
+    "X-Unsent: 1",
+    "To: "+toHeader,
+    "Subject: "+(subject||""),
+    "MIME-Version: 1.0",
+    "Content-Type: text/plain; charset=utf-8",
+    "Content-Transfer-Encoding: 8bit",
+    "",
+    body||""
+  ].join(nl);
+}
+function downloadTextFile(filename, content, mime){
+  var blob=new Blob([content],{type:mime||"application/octet-stream"});
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement("a");
+  a.href=url; a.download=filename; a.style.display="none";
+  document.body.appendChild(a); a.click();
+  setTimeout(function(){ if(a.parentNode) a.parentNode.removeChild(a); URL.revokeObjectURL(url); },150);
+}
+function safeFileName(s){ return String(s||"user").replace(/[^a-z0-9\-_.]+/gi,"_").slice(0,60); }
+
 // ─── UI ATOMS ─────────────────────────────────────────────────────────────────
 function StatusDot({status,size=12}){const m=STATUS_META[status]||STATUS_META.red;return <span style={{display:"inline-block",width:size,height:size,borderRadius:"50%",background:status==="yellow"?IBM.yellow30:m.color,boxShadow:"0 0 "+Math.round(size/1.4)+"px 2px "+m.glow,flexShrink:0}}/>;}
 function SevBadge({sev}){const s=SEV[sev];return <span style={{background:s.bg,color:s.color,padding:"2px 9px",fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.05em",borderRadius:2,display:"inline-flex",alignItems:"center",gap:5,border:`1px solid ${s.color}`}}>{sev===4?"●":sev===3?"▲":sev===2?"◆":sev===1?"▼":"✓"} {s.label}</span>;}
@@ -2840,7 +2878,7 @@ function ImportModal({onImport, onClose}) {
   );
 }
 // ─── BULK BAR ─────────────────────────────────────────────────────────────────
-function BulkBar({selected,total,onSelectAll,onClearAll,onBulkNotif,onSendAll,onBulkTeams,onBulkEmail,bulkLoading,bulkProgress,notifications,bulkTeamsSent,bulkEmailSent}){
+function BulkBar({selected,total,onSelectAll,onClearAll,onBulkNotif,onSendAll,onBulkTeams,onBulkEmail,onBulkEmlDownload,bulkLoading,bulkProgress,notifications,bulkTeamsSent,bulkEmailSent}){
   const hasGen=selected.some(id=>notifications[id]);const hasSel=selected.length>0;
   const bBtn=(active,bg)=>({padding:"6px 12px",background:active?bg:IBM.gray70,color:active?"#fff":IBM.gray50,border:"none",cursor:active?"pointer":"not-allowed",fontSize:12,fontWeight:600});
   return(
@@ -2853,7 +2891,8 @@ function BulkBar({selected,total,onSelectAll,onClearAll,onBulkNotif,onSendAll,on
       {hasGen&&<button onClick={onSendAll} style={bBtn(true,IBM.purple60)}>✉ Send All</button>}
       <span style={{width:1,height:18,background:IBM.gray70,flexShrink:0}}/>
       <button onClick={onBulkTeams} disabled={!hasSel} style={bBtn(hasSel,bulkTeamsSent?"#464775":"#5b5ea6")}>{bulkTeamsSent?`✓ Teams (${selected.length})`:`💬 Teams (${selected.length})`}</button>
-      <button onClick={onBulkEmail} disabled={!hasSel} style={bBtn(hasSel,bulkEmailSent?IBM.green50:IBM.orange40)}>{bulkEmailSent?`✓ Email (${selected.length})`:`✉ Email (${selected.length})`}</button>
+      <button onClick={onBulkEmail} disabled={!hasSel} style={bBtn(hasSel,bulkEmailSent?IBM.green50:IBM.orange40)} title="Open each draft in your default mail client (Outlook)">{bulkEmailSent?`✓ Email (${selected.length})`:`✉ Email (${selected.length})`}</button>
+      <button onClick={onBulkEmlDownload} disabled={!hasSel} style={bBtn(hasSel,"#6929c4")} title="Download one .eml draft per user — double-click in Outlook to open as editable draft, or drag into the Drafts folder">📨 .eml Drafts ({selected.length})</button>
     </div>
   );
 }
@@ -3924,7 +3963,65 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
   },[users,filterStatus,filterSource,search,filterRM,filterWBS,sortMode,showAllMonths,selMonth,selYear]);
 
   const handleGenNotif=u=>{if(getStatus(u)==="green")return;setNotifications(p=>({...p,[u.id]:genNotifForUser(u,monthLabel,periodLabel)}));showToast(`✓ Ready for ${u.name}`);};
-  const handleSendEmail=u=>{const n=notifications[u.id]||genNotifForUser(u,monthLabel,periodLabel);setEmailLog(p=>[{id:Date.now(),type:"email",to:u.email,toName:u.name,subject:n.subject,sentAt:new Date().toLocaleString()},...p]);setNotifications(p=>({...p,[u.id]:n}));showToast("✉ Email sent to "+u.email);};
+  const handleSendEmail=u=>{
+    const n=notifications[u.id]||genNotifForUser(u,monthLabel,periodLabel);
+    if(!u.email){ showToast("No email address on file for "+u.name,"error"); return; }
+    openMailtoLink(buildMailtoUrl(u.email,n.subject,n.body));
+    setEmailLog(p=>[{id:Date.now(),type:"email",to:u.email,toName:u.name,subject:n.subject,sentAt:new Date().toLocaleString()},...p]);
+    setNotifications(p=>({...p,[u.id]:n}));
+    showToast("✉ Draft opened in mail client for "+u.name);
+  };
+  // Bulk: open each selected mismatched user's draft in the default mail
+  // client (Outlook). Most browsers only allow ~1-3 mailto: links per gesture,
+  // so for larger batches we fall back to .eml file download.
+  const handleBulkOpenMailto=()=>{
+    const targets=users.filter(u=>selected.includes(u.id)&&getStatus(u)!=="green"&&!!u.email);
+    if(!targets.length){ showToast("No mismatched users with email addresses selected","error"); return; }
+    if(targets.length>3){
+      showToast(targets.length+" selected — using .eml download (browsers block bulk mailto)");
+      handleBulkDownloadEml();
+      return;
+    }
+    const newNotifs={};
+    targets.forEach(u=>{ if(!notifications[u.id]) newNotifs[u.id]=genNotifForUser(u,monthLabel,periodLabel); });
+    if(Object.keys(newNotifs).length) setNotifications(p=>({...p,...newNotifs}));
+    targets.forEach((u,i)=>{
+      const n=notifications[u.id]||newNotifs[u.id];
+      setTimeout(function(){ openMailtoLink(buildMailtoUrl(u.email,n.subject,n.body)); }, i*450);
+    });
+    setEmailLog(p=>[
+      ...targets.map(u=>({id:Date.now()+Math.random(),type:"email",to:u.email,toName:u.name,subject:(notifications[u.id]||newNotifs[u.id]).subject,sentAt:new Date().toLocaleString()})),
+      ...p
+    ]);
+    setBulkEmailSent(true);
+    showToast("✉ Opening "+targets.length+" mail drafts…");
+  };
+  // Bulk: download an .eml draft per selected mismatched user. Outlook opens
+  // each as an editable draft; drag into the Drafts folder to stage for send.
+  const handleBulkDownloadEml=()=>{
+    const targets=users.filter(u=>selected.includes(u.id)&&getStatus(u)!=="green");
+    if(!targets.length){ showToast("No mismatched users selected","error"); return; }
+    const withEmail=targets.filter(u=>!!u.email);
+    if(!withEmail.length){ showToast("Selected users have no email addresses","error"); return; }
+    const newNotifs={};
+    withEmail.forEach(u=>{ if(!notifications[u.id]) newNotifs[u.id]=genNotifForUser(u,monthLabel,periodLabel); });
+    if(Object.keys(newNotifs).length) setNotifications(p=>({...p,...newNotifs}));
+    withEmail.forEach((u,i)=>{
+      const n=notifications[u.id]||newNotifs[u.id];
+      setTimeout(function(){
+        downloadTextFile("Timesheet_"+safeFileName(u.name)+".eml",
+                         buildEmlDraft(u.email,u.name,n.subject,n.body),
+                         "message/rfc822");
+      }, i*120);
+    });
+    setEmailLog(p=>[
+      ...withEmail.map(u=>({id:Date.now()+Math.random(),type:"email",to:u.email,toName:u.name,subject:(notifications[u.id]||newNotifs[u.id]).subject,sentAt:new Date().toLocaleString()})),
+      ...p
+    ]);
+    setBulkEmailSent(true);
+    const skipped=targets.length-withEmail.length;
+    showToast("⬇ "+withEmail.length+" .eml drafts downloading"+(skipped>0?" ("+skipped+" skipped — no email)":"")+" — open in Outlook");
+  };
   const handleSendTeams=u=>{const n=notifications[u.id]||genNotifForUser(u,monthLabel,periodLabel);setEmailLog(p=>[{id:Date.now(),type:"teams",to:u.name,toName:u.name,subject:"Teams: "+n.subject,sentAt:new Date().toLocaleString()},...p]);setNotifications(p=>({...p,[u.id]:n}));showToast("💬 Teams sent to "+u.name);};
   const handleFixEntry=(uid,newSch,note)=>{setUsers(prev=>prev.map(u=>u.id!==uid?u:{...u,scheduled:newSch}));showToast(`✓ Updated to ${newSch}h`);};
   const handleBulkNotif=()=>{const targets=users.filter(u=>selected.includes(u.id)&&getStatus(u)!=="green");if(!targets.length){showToast("All selected are complete","error");return;}const results=genBulkNotifs(targets,monthLabel,periodLabel,(d,t,n)=>setBulkProgress(`${d}/${t}`));setNotifications(p=>({...p,...results}));showToast(`✓ ${Object.keys(results).length} notifications ready`);setBulkProgress("");};
@@ -4260,7 +4357,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
       {/* RECORDS */}
       {activeTab==="records"&&(
         <div>
-          <BulkBar selected={selected} total={filtered.length} onSelectAll={()=>setSelected(filtered.map(u=>u.id))} onClearAll={()=>setSelected([])} onBulkNotif={handleBulkNotif} onSendAll={handleBulkSendAll} onBulkTeams={()=>{users.filter(u=>selected.includes(u.id)).forEach(u=>handleSendTeams(u));setBulkTeamsSent(true);}} onBulkEmail={()=>{users.filter(u=>selected.includes(u.id)).forEach(u=>handleSendEmail(u));setBulkEmailSent(true);}} bulkLoading={bulkLoading} bulkProgress={bulkProgress} notifications={notifications} bulkTeamsSent={bulkTeamsSent} bulkEmailSent={bulkEmailSent}/>
+          <BulkBar selected={selected} total={filtered.length} onSelectAll={()=>setSelected(filtered.map(u=>u.id))} onClearAll={()=>setSelected([])} onBulkNotif={handleBulkNotif} onSendAll={handleBulkSendAll} onBulkTeams={()=>{users.filter(u=>selected.includes(u.id)).forEach(u=>handleSendTeams(u));setBulkTeamsSent(true);}} onBulkEmail={handleBulkOpenMailto} onBulkEmlDownload={handleBulkDownloadEml} bulkLoading={bulkLoading} bulkProgress={bulkProgress} notifications={notifications} bulkTeamsSent={bulkTeamsSent} bulkEmailSent={bulkEmailSent}/>
           {/* Filter bar */}
           <div style={{padding:"12px 28px 0",background:"#fff",borderBottom:"1px solid "+IBM.gray20}}>
             {/* Row 1: Status chips + search + sort + actions */}
