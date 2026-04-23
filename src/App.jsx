@@ -262,7 +262,7 @@ function resetLoginAttempts(username) {
 }
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
-function getSeverity(u){const e=Number(u.entered)||0,s=Number(u.scheduled)||0;if(s===0||e>=s)return 0;if(e===0)return 4;const g=((s-e)/s)*100;if(g<=10)return 1;if(g<=30)return 2;if(g<=60)return 3;return 4;}
+function getSeverity(u){const e=Number(u.entered)||0,s=Number(u.scheduled)||0;if(e===s)return 0;if(e===0)return 4;const g=(Math.abs(s-e)/Math.max(s,1))*100;if(g<=10)return 1;if(g<=30)return 2;if(g<=60)return 3;return 4;}
 const SEV={0:{label:"Complete",color:IBM.green50,bg:IBM.green10,glow:"#24a14855"},1:{label:"Low",color:"#0e6027",bg:"#d1f5d9",glow:"#24a14833"},2:{label:"Medium",color:"#8e6a00",bg:IBM.yellow10,glow:"#f1c21b44"},3:{label:"High",color:IBM.orange40,bg:IBM.orange10,glow:"#ff832b44"},4:{label:"Critical",color:IBM.red60,bg:IBM.red10,glow:"#da1e2855"}};
 function getStatus(u){
   var e=Number(u.entered)||0, s=Number(u.scheduled)||0;
@@ -376,21 +376,89 @@ function downloadConsolidated(users,mL,pL){const rows=[];users.forEach(u=>{const
 
 // ─── NOTIFICATIONS ────────────────────────────────────────────────────────────
 function buildNotifTemplate(user,status,mL,pL){
-  const today=new Date().toLocaleDateString("en-GB",{day:"2-digit",month:"long",year:"numeric"});
-  const projects=(user.projects||[]).map(p=>p.code+" - "+p.name).join(", ")||"-";
-  const sch=Number(user.scheduled)||0,ent=Number(user.entered)||0;
-  const gap=sch-ent,sev=SEV[getSeverity(user)].label.toUpperCase();
-  const div="--------------------------------------";
-  const mismatches=(user.history||[]).filter(r=>r.diff>0).sort((a,b)=>b.diff-a.diff).slice(0,8);
-  const entStr=ent===0?"Not submitted":ent+"h",gapStr=gap>0?"-"+gap+"h":"None";
-  let mmBlock="";
-  if(mismatches.length>0){
-    const rows=mismatches.map(m=>"  "+(m.periodLabel||"").padEnd(20)+"| "+(m.projectCode||"").padEnd(15)+"| "+(m.scheduled+"h").padEnd(10)+"| "+(m.entered===0?"Not submitted":m.entered+"h").padEnd(9)+"| -"+m.diff+"h").join("\n");
-    mmBlock=[div,"  MISMATCH DETAILS",div,"  Period              | Project        | Scheduled | Entered | Gap","  "+"-".repeat(64),rows,div].join("\n")+"\n";
+  var today=new Date().toLocaleDateString("en-GB",{day:"2-digit",month:"long",year:"numeric"});
+
+  // Use the user's actual IBM claim months instead of the UI filter month
+  var actualPeriod=(user.claimMonths&&user.claimMonths.length>0)?user.claimMonths.join(", "):mL;
+
+  var sch=Number(user.scheduled)||0,ent=Number(user.entered)||0;
+  var variance=ent-sch; // positive = over-entered, negative = under-entered
+  var absVar=Math.abs(variance);
+  var sevKey=getSeverity(user);
+  var sevLabel=SEV[sevKey].label.toUpperCase(); // HIGH / MEDIUM / LOW / CRITICAL / COMPLETE
+
+  var entStr=ent===0?"Not submitted":ent+"h";
+  var gapStr,varianceType;
+  if(variance===0){gapStr="None";varianceType="none";}
+  else if(variance>0){gapStr="+"+variance+"h over scheduled (over-entry)";varianceType="over";}
+  else{gapStr="-"+absVar+"h below scheduled (under-entry)";varianceType="under";}
+
+  // Full project list — one per line, with full name
+  var projectLines=(user.projects||[]).map(function(p){return "  • "+(p.code?"["+p.code+"] ":"")+(p.name||"Unknown project");});
+  var projectBlock=projectLines.length>0?projectLines.join("\n"):"  • —";
+
+  var wbsStr=user.wbsId||"—";
+  var div="--------------------------------------";
+
+  // History rows: show ALL mismatched periods (diff ≠ 0), not just positive
+  var mismatchRows=(user.history||[]).filter(function(r){return r.diff!==0;})
+    .sort(function(a,b){return Math.abs(b.diff)-Math.abs(a.diff);}).slice(0,8);
+  var mmBlock="";
+  if(mismatchRows.length>0){
+    var rows=mismatchRows.map(function(m){
+      var dSign=m.diff>0?"-":"+"; // diff=sch-ent; positive means under-entered (gap), negative means over-entered
+      return "  "+(m.periodLabel||"").padEnd(20)+"| "+(m.projectCode||"").padEnd(15)+"| "+(m.scheduled+"h").padEnd(10)+"| "+(m.entered===0?"Not submitted":m.entered+"h").padEnd(9)+"| "+dSign+Math.abs(m.diff)+"h";
+    }).join("\n");
+    mmBlock=[div,"  VARIANCE DETAILS","  (– = under-entered  /  + = over-entered)",div,
+      "  Period              | Project        | Scheduled | Entered | Variance",
+      "  "+"-".repeat(64),rows,div,""].join("\n");
   }
-  const action=status==="red"?"Your timesheet has NOT been submitted. Please log in immediately.":"Your timesheet is incomplete. Please review and update your entries.";
-  const subject="[Timesheet Reminder] Action Required - "+user.name+" | "+mL+" | "+pL;
-  const body=["Dear "+user.name+",","","This is an automated reminder from the Timesheet Management System.","Period: "+mL+" - "+pL,div,"  Employee    : "+user.name,"  Employee ID : "+user.id,"  Severity    : "+sev,div,"  Scheduled   : "+sch+"h","  Entered     : "+entStr,"  Gap         : "+gapStr,"  Projects    : "+projects,div,mmBlock,"ACTION REQUIRED:",action,"","Please resolve by end of business today ("+today+").",div,"Timesheet Management System"].join("\n");
+
+  // Tailored action + brief description based on mismatch type
+  var brief,action;
+  if(status==="red"){
+    brief="Our records show no timesheet submission for the period "+actualPeriod+". Unsubmitted timesheets affect project billing, resource planning, and compliance reporting — immediate action is required.";
+    action="Your timesheet for "+actualPeriod+" has NOT been submitted. Please log in to the IBM timesheet system immediately and enter your hours.";
+  } else if(varianceType==="over"){
+    brief="Your timesheet for "+actualPeriod+" shows "+variance+"h MORE than your IBM-scheduled "+sch+"h. This over-entry may indicate incorrect or missing project allocation. Please verify and correct your Clarity entries.";
+    action="Review your time entries for "+actualPeriod+" and correct any hours that were logged against the wrong project or entered more than once. Scheduled: "+sch+"h — Entered: "+ent+"h — Excess: +"+variance+"h.";
+  } else {
+    brief="Your timesheet for "+actualPeriod+" shows "+absVar+"h FEWER than your IBM-scheduled "+sch+"h. Missing hours affect project cost tracking, resource utilization reports, and manager approvals.";
+    action="Submit your remaining "+absVar+"h for "+actualPeriod+" before the period closes. Scheduled: "+sch+"h — Entered: "+ent+"h — Shortfall: -"+absVar+"h.";
+  }
+
+  var subject="[Timesheet Reminder] Action Required — "+user.name+" | "+actualPeriod+" | "+pL;
+  var body=[
+    "Dear "+user.name+",",
+    "",
+    "This is an automated reminder from the Timesheet Management System.",
+    "Period : "+actualPeriod,
+    "Report : "+pL,
+    "",
+    brief,
+    "",
+    div,
+    "  IBM Name    : "+user.name,
+    "  Clarity Name: "+(user.clarityName||user.id),
+    "  WBS ID      : "+wbsStr,
+    "  Severity    : "+sevLabel,
+    div,
+    "  Scheduled   : "+sch+"h",
+    "  Entered     : "+entStr,
+    "  Variance    : "+gapStr,
+    div,
+    "  Projects assigned:",
+    projectBlock,
+    div,
+    mmBlock,
+    "ACTION REQUIRED:",
+    action,
+    "",
+    "Please resolve by end of business today ("+today+").",
+    div,
+    "Timesheet Management System",
+    "This is an automated notification — do not reply to this email."
+  ].join("\n");
   return{subject,body};
 }
 function genNotifForUser(u,mL,pL){return buildNotifTemplate(u,getStatus(u),mL,pL);}
