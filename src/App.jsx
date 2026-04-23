@@ -420,7 +420,7 @@ function buildNotifTemplate(user,status,mL,pL){
     brief="Our records show no timesheet submission for the period "+actualPeriod+". Unsubmitted timesheets affect project billing, resource planning, and compliance reporting — immediate action is required.";
     action="Your timesheet for "+actualPeriod+" has NOT been submitted. Please log in to the IBM timesheet system immediately and enter your hours.";
   } else if(varianceType==="over"){
-    brief="Your timesheet for "+actualPeriod+" shows "+variance+"h MORE than your IBM-scheduled "+sch+"h. This over-entry may indicate duplicate logging or incorrect project allocation. Please verify and correct your Clarity entries.";
+    brief="Your timesheet for "+actualPeriod+" shows "+variance+"h MORE than your IBM-scheduled "+sch+"h. This over-entry may indicate incorrect or missing project allocation. Please verify and correct your Clarity entries.";
     action="Review your time entries for "+actualPeriod+" and correct any hours that were logged against the wrong project or entered more than once. Scheduled: "+sch+"h — Entered: "+ent+"h — Excess: +"+variance+"h.";
   } else {
     brief="Your timesheet for "+actualPeriod+" shows "+absVar+"h FEWER than your IBM-scheduled "+sch+"h. Missing hours affect project cost tracking, resource utilization reports, and manager approvals.";
@@ -438,8 +438,8 @@ function buildNotifTemplate(user,status,mL,pL){
     brief,
     "",
     div,
-    "  Employee    : "+user.name,
-    "  Employee ID : "+user.id,
+    "  IBM Name    : "+user.name,
+    "  Clarity Name: "+(user.clarityName||user.id),
     "  WBS ID      : "+wbsStr,
     "  Severity    : "+sevLabel,
     div,
