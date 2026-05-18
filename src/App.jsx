@@ -262,13 +262,13 @@ function resetLoginAttempts(username) {
 }
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
-function getSeverity(u){const e=Number(u.entered)||0,s=Number(u.scheduled)||0;if(s===0||e>=s)return 0;if(e===0)return 4;const g=((s-e)/s)*100;if(g<=10)return 1;if(g<=30)return 2;if(g<=60)return 3;return 4;}
+function getSeverity(u){const e=Number(u.entered)||0,s=Number(u.scheduled)||0;if(e===s)return 0;if(e===0)return 4;const g=(Math.abs(s-e)/Math.max(s,1))*100;if(g<=10)return 1;if(g<=30)return 2;if(g<=60)return 3;return 4;}
 const SEV={0:{label:"Complete",color:IBM.green50,bg:IBM.green10,glow:"#24a14855"},1:{label:"Low",color:"#0e6027",bg:"#d1f5d9",glow:"#24a14833"},2:{label:"Medium",color:"#8e6a00",bg:IBM.yellow10,glow:"#f1c21b44"},3:{label:"High",color:IBM.orange40,bg:IBM.orange10,glow:"#ff832b44"},4:{label:"Critical",color:IBM.red60,bg:IBM.red10,glow:"#da1e2855"}};
 function getStatus(u){
   var e=Number(u.entered)||0, s=Number(u.scheduled)||0;
   if(u.dataSource==="Clarity only") return "purple"; // separate category
   if(e===0) return "red";
-  if(e<s) return "yellow";
+  if(e!==s) return "yellow"; // any variance (over or under) = Mismatch
   return "green";
 }
 const STATUS_META={green:{label:"Complete",color:IBM.green50,bg:IBM.green10,glow:"#24a14855"},yellow:{label:"Mismatch",color:"#8e6a00",bg:IBM.yellow10,glow:"#f1c21b55"},red:{label:"Missing",color:IBM.red60,bg:IBM.red10,glow:"#da1e2855"},purple:{label:"No IBM Schedule",color:IBM.purple60,bg:IBM.purple10,glow:"#6929c433"}};
@@ -376,25 +376,131 @@ function downloadConsolidated(users,mL,pL){const rows=[];users.forEach(u=>{const
 
 // ─── NOTIFICATIONS ────────────────────────────────────────────────────────────
 function buildNotifTemplate(user,status,mL,pL){
-  const today=new Date().toLocaleDateString("en-GB",{day:"2-digit",month:"long",year:"numeric"});
-  const projects=(user.projects||[]).map(p=>p.code+" - "+p.name).join(", ")||"-";
-  const sch=Number(user.scheduled)||0,ent=Number(user.entered)||0;
-  const gap=sch-ent,sev=SEV[getSeverity(user)].label.toUpperCase();
-  const div="--------------------------------------";
-  const mismatches=(user.history||[]).filter(r=>r.diff>0).sort((a,b)=>b.diff-a.diff).slice(0,8);
-  const entStr=ent===0?"Not submitted":ent+"h",gapStr=gap>0?"-"+gap+"h":"None";
-  let mmBlock="";
-  if(mismatches.length>0){
-    const rows=mismatches.map(m=>"  "+(m.periodLabel||"").padEnd(20)+"| "+(m.projectCode||"").padEnd(15)+"| "+(m.scheduled+"h").padEnd(10)+"| "+(m.entered===0?"Not submitted":m.entered+"h").padEnd(9)+"| -"+m.diff+"h").join("\n");
-    mmBlock=[div,"  MISMATCH DETAILS",div,"  Period              | Project        | Scheduled | Entered | Gap","  "+"-".repeat(64),rows,div].join("\n")+"\n";
+  var today=new Date().toLocaleDateString("en-GB",{day:"2-digit",month:"long",year:"numeric"});
+
+  // Use the user's actual IBM claim months instead of the UI filter month
+  var actualPeriod=(user.claimMonths&&user.claimMonths.length>0)?user.claimMonths.join(", "):mL;
+
+  var sch=Number(user.scheduled)||0,ent=Number(user.entered)||0;
+  var variance=ent-sch; // positive = over-entered, negative = under-entered
+  var absVar=Math.abs(variance);
+  var sevKey=getSeverity(user);
+  var sevLabel=SEV[sevKey].label.toUpperCase(); // HIGH / MEDIUM / LOW / CRITICAL / COMPLETE
+
+  var entStr=ent===0?"Not submitted":ent+"h";
+  var gapStr,varianceType;
+  if(variance===0){gapStr="None";varianceType="none";}
+  else if(variance>0){gapStr="+"+variance+"h over scheduled (over-entry)";varianceType="over";}
+  else{gapStr="-"+absVar+"h below scheduled (under-entry)";varianceType="under";}
+
+  // Full project list — one per line, with full name
+  var projectLines=(user.projects||[]).map(function(p){return "  • "+(p.code?"["+p.code+"] ":"")+(p.name||"Unknown project");});
+  var projectBlock=projectLines.length>0?projectLines.join("\n"):"  • —";
+
+  var wbsStr=user.wbsId||"—";
+  var div="--------------------------------------";
+
+  // History rows: show ALL mismatched periods (diff ≠ 0), not just positive
+  var mismatchRows=(user.history||[]).filter(function(r){return r.diff!==0;})
+    .sort(function(a,b){return Math.abs(b.diff)-Math.abs(a.diff);}).slice(0,8);
+  var mmBlock="";
+  if(mismatchRows.length>0){
+    var rows=mismatchRows.map(function(m){
+      var dSign=m.diff>0?"-":"+"; // diff=sch-ent; positive means under-entered (gap), negative means over-entered
+      return "  "+(m.periodLabel||"").padEnd(20)+"| "+(m.projectCode||"").padEnd(15)+"| "+(m.scheduled+"h").padEnd(10)+"| "+(m.entered===0?"Not submitted":m.entered+"h").padEnd(9)+"| "+dSign+Math.abs(m.diff)+"h";
+    }).join("\n");
+    mmBlock=[div,"  VARIANCE DETAILS","  (– = under-entered  /  + = over-entered)",div,
+      "  Period              | Project        | Scheduled | Entered | Variance",
+      "  "+"-".repeat(64),rows,div,""].join("\n");
   }
-  const action=status==="red"?"Your timesheet has NOT been submitted. Please log in immediately.":"Your timesheet is incomplete. Please review and update your entries.";
-  const subject="[Timesheet Reminder] Action Required - "+user.name+" | "+mL+" | "+pL;
-  const body=["Dear "+user.name+",","","This is an automated reminder from the Timesheet Management System.","Period: "+mL+" - "+pL,div,"  Employee    : "+user.name,"  Employee ID : "+user.id,"  Severity    : "+sev,div,"  Scheduled   : "+sch+"h","  Entered     : "+entStr,"  Gap         : "+gapStr,"  Projects    : "+projects,div,mmBlock,"ACTION REQUIRED:",action,"","Please resolve by end of business today ("+today+").",div,"Timesheet Management System"].join("\n");
+
+  // Tailored action + brief description based on mismatch type
+  var brief,action;
+  if(status==="red"){
+    brief="Our records show no timesheet submission for the period "+actualPeriod+". Unsubmitted timesheets affect project billing, resource planning, and compliance reporting — immediate action is required.";
+    action="Your timesheet for "+actualPeriod+" has NOT been submitted. Please log in to the IBM timesheet system immediately and enter your hours.";
+  } else if(varianceType==="over"){
+    brief="Your timesheet for "+actualPeriod+" shows "+variance+"h MORE than your IBM-scheduled "+sch+"h. This over-entry may indicate incorrect or missing project allocation. Please verify and correct your Clarity entries.";
+    action="Review your time entries for "+actualPeriod+" and correct any hours that were logged against the wrong project or entered more than once. Scheduled: "+sch+"h — Entered: "+ent+"h — Excess: +"+variance+"h.";
+  } else {
+    brief="Your timesheet for "+actualPeriod+" shows "+absVar+"h FEWER than your IBM-scheduled "+sch+"h. Missing hours affect project cost tracking, resource utilization reports, and manager approvals.";
+    action="Submit your remaining "+absVar+"h for "+actualPeriod+" before the period closes. Scheduled: "+sch+"h — Entered: "+ent+"h — Shortfall: -"+absVar+"h.";
+  }
+
+  var subject="[Timesheet Reminder] Action Required — "+user.name+" | "+actualPeriod+" | "+pL;
+  var body=[
+    "Dear "+user.name+",",
+    "",
+    "This is an automated reminder from the Timesheet Management System.",
+    "Period : "+actualPeriod,
+    "Report : "+pL,
+    "",
+    brief,
+    "",
+    div,
+    "  IBM Name    : "+user.name,
+    "  Clarity Name: "+(user.clarityName||user.id),
+    "  WBS ID      : "+wbsStr,
+    "  Severity    : "+sevLabel,
+    div,
+    "  Scheduled   : "+sch+"h",
+    "  Entered     : "+entStr,
+    "  Variance    : "+gapStr,
+    div,
+    "  Projects assigned:",
+    projectBlock,
+    div,
+    mmBlock,
+    "ACTION REQUIRED:",
+    action,
+    "",
+    "Please resolve by end of business today ("+today+").",
+    div,
+    "Timesheet Management System",
+    "This is an automated notification — do not reply to this email."
+  ].join("\n");
   return{subject,body};
 }
 function genNotifForUser(u,mL,pL){return buildNotifTemplate(u,getStatus(u),mL,pL);}
 function genBulkNotifs(targets,mL,pL,onP){const r={};targets.forEach((u,i)=>{r[u.id]=buildNotifTemplate(u,getStatus(u),mL,pL);onP(i+1,targets.length,u.name);});return r;}
+
+// ─── EMAIL DRAFT HELPERS ──────────────────────────────────────────────────────
+// Open default mail client (Outlook on Windows) with prefilled To/Subject/Body.
+function buildMailtoUrl(to, subject, body){
+  return "mailto:"+encodeURIComponent(to||"")+"?subject="+encodeURIComponent(subject||"")+"&body="+encodeURIComponent(body||"");
+}
+function openMailtoLink(url){
+  var a=document.createElement("a");
+  a.href=url; a.style.display="none";
+  document.body.appendChild(a); a.click();
+  setTimeout(function(){ if(a.parentNode) a.parentNode.removeChild(a); },100);
+}
+// Build an RFC-5322 .eml draft. The "X-Unsent: 1" header tells Outlook to open
+// it as a draft (editable, not a received message). Double-click the file or
+// drag into the Outlook Drafts folder to bulk-stage them for sending.
+function buildEmlDraft(toEmail, toName, subject, body){
+  var nl="\r\n";
+  var toHeader = toName ? ('"'+String(toName).replace(/"/g,"")+'" <'+(toEmail||"")+'>') : (toEmail||"");
+  return [
+    "X-Unsent: 1",
+    "To: "+toHeader,
+    "Subject: "+(subject||""),
+    "MIME-Version: 1.0",
+    "Content-Type: text/plain; charset=utf-8",
+    "Content-Transfer-Encoding: 8bit",
+    "",
+    body||""
+  ].join(nl);
+}
+function downloadTextFile(filename, content, mime){
+  var blob=new Blob([content],{type:mime||"application/octet-stream"});
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement("a");
+  a.href=url; a.download=filename; a.style.display="none";
+  document.body.appendChild(a); a.click();
+  setTimeout(function(){ if(a.parentNode) a.parentNode.removeChild(a); URL.revokeObjectURL(url); },150);
+}
+function safeFileName(s){ return String(s||"user").replace(/[^a-z0-9\-_.]+/gi,"_").slice(0,60); }
 
 // ─── UI ATOMS ─────────────────────────────────────────────────────────────────
 function StatusDot({status,size=12}){const m=STATUS_META[status]||STATUS_META.red;return <span style={{display:"inline-block",width:size,height:size,borderRadius:"50%",background:status==="yellow"?IBM.yellow30:m.color,boxShadow:"0 0 "+Math.round(size/1.4)+"px 2px "+m.glow,flexShrink:0}}/>;}
@@ -1388,7 +1494,13 @@ function EmployeeDetailPanel({userId,users,monthLabel,periodLabel,onFixEntry,onS
                               <div key={wi} title={"W/E "+w.weekEnd+": "+w.total+"h"} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
                                 <div style={{fontSize:8,color:IBM.blue60,fontWeight:700}}>{w.total||0}</div>
                                 <div style={{width:"100%",background:IBM.blue60,height:barH+"px",minHeight:2}}/>
-                                <div style={{fontSize:7,color:IBM.gray50,textAlign:"center",lineHeight:1}}>{w.weekEnd?w.weekEnd.slice(0,5):""}</div>
+                                <div style={{fontSize:7,color:IBM.gray50,textAlign:"center",lineHeight:1}}>{(function(){
+                                  if(!w.weekEnd) return "";
+                                  // "DD-Mon-YYYY" → show "Mon DD"
+                                  var p=w.weekEnd.split("-");
+                                  if(p.length===3 && p[1].length===3) return p[1]+" "+parseInt(p[0]);
+                                  return w.weekEnd.slice(0,5);
+                                })()}</div>
                               </div>
                             );
                           })}
@@ -1727,6 +1839,27 @@ function parseIBMFile(wb) {
   var rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
   if (!rows.length) return { error: "Sheet '" + sheetName + "' is empty." };
 
+  // Convert an Excel date serial number to a "DD-Mon-YYYY" string.
+  // Excel epoch = Dec 30 1899; JS epoch = Jan 1 1970 → offset = 25569 days.
+  // Valid IBM sheet serials are roughly 40000-60000 (year ~2009–2064).
+  function excelSerialToDateStr(serial) {
+    var MN = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    var d = new Date((serial - 25569) * 86400000);
+    var dd  = String(d.getUTCDate()).padStart(2,"0");
+    var mmm = MN[d.getUTCMonth()];
+    var yyyy = d.getUTCFullYear();
+    return dd + "-" + mmm + "-" + yyyy;
+  }
+  function normaliseWeDate(raw) {
+    if (!raw) return raw;
+    var n = Number(raw);
+    // If the value is a 5-digit integer in the plausible Excel-date range, convert it.
+    if (!isNaN(n) && n >= 40000 && n <= 60000 && String(raw).trim() === String(Math.floor(n))) {
+      return excelSerialToDateStr(Math.floor(n));
+    }
+    return raw;
+  }
+
   function claimMonthLabel(cm) {
     var n = parseInt(cm);
     var MN = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -1752,7 +1885,10 @@ function parseIBMFile(wb) {
         serialId: String(getCol(row, ["resource talentid (serial)","serial"]) || ""),
         country: String(getCol(row, ["resource country name","country"]) || ""),
         billingCode: String(getCol(row, ["billing code"]) || ""),
-        wbsId: String(getCol(row, ["ippf customer wbs id","wbs"]) || ""),
+        billingRate: parseFloat(getCol(row, ["billing rate"]) || "") || 0,
+        hireType:    String(getCol(row, ["hire type"]) || ""),
+        resourceType:String(getCol(row, ["resource type"]) || ""),
+        wbsId: String(getCol(row, ["wbs id","original account id","ippf customer wbs id","wbs short","wbs"]) || ""),
         activityCode: String(getCol(row, ["activity code"]) || ""),
         scheduledHours: 0, workitems: [], claimMonths: [],
         satHrs:0, sunHrs:0, monHrs:0, tueHrs:0, wedHrs:0, thuHrs:0, friHrs:0,
@@ -1767,8 +1903,8 @@ function parseIBMFile(wb) {
     var wed = parseFloat(getCol(row, ["wed hours","wed"]) || 0) || 0;
     var thu = parseFloat(getCol(row, ["thu hours","thu"]) || 0) || 0;
     var fri = parseFloat(getCol(row, ["fri hours","fri"]) || 0) || 0;
-    var we  = String(getCol(row, ["hours performed for w/e","w/e","week end","week ending"]) || "").trim();
-    var cm  = String(getCol(row, ["claim month"]) || "").trim();
+    var we  = normaliseWeDate(String(getCol(row, ["hours performed for w/e","w/e","week end","week ending"]) || "").trim());
+    var cm  = normaliseWeDate(String(getCol(row, ["claim month"]) || "").trim());
     var wi  = String(getCol(row, ["workitem title","workitem"]) || "").trim();
     var ac  = String(getCol(row, ["activity code"]) || "").trim();
     byName[key].scheduledHours += hrs;
@@ -1818,8 +1954,11 @@ function parseIBMFile(wb) {
     }
     if (cm) { if (byName[key].claimMonths.indexOf(monthYearKey) === -1) byName[key].claimMonths.push(monthYearKey); }
     if (!byName[key].email) byName[key].email = String(getCol(row, ["internet address"]) || "");
-    if (!byName[key].wbsId) byName[key].wbsId = String(getCol(row, ["ippf customer wbs id","wbs"]) || "");
+    if (!byName[key].wbsId) byName[key].wbsId = String(getCol(row, ["wbs id","original account id","ippf customer wbs id","wbs short","wbs"]) || "");
     if (!byName[key].billingCode) byName[key].billingCode = String(getCol(row, ["billing code"]) || "");
+    if (!byName[key].billingRate) { var _br=parseFloat(getCol(row,["billing rate"])||""); if(_br) byName[key].billingRate=_br; }
+    if (!byName[key].hireType)    byName[key].hireType    = String(getCol(row, ["hire type"]) || "");
+    if (!byName[key].resourceType)byName[key].resourceType= String(getCol(row, ["resource type"]) || "");
     if (!byName[key].country) byName[key].country = String(getCol(row, ["resource country name","country"]) || "");
     if (!byName[key].talentId) byName[key].talentId = String(getCol(row, ["talentid (cnum)","cnum"]) || "");
     if (!byName[key].serialId) byName[key].serialId = String(getCol(row, ["resource talentid (serial)","serial"]) || "");
@@ -2110,6 +2249,9 @@ function mergeRecords(ibmRecords, clarityRecords, manualMatches) {
       serialId: ibm.serialId,
       country: ibm.country,
       billingCode: ibm.billingCode,
+      billingRate: ibm.billingRate || 0,
+      hireType: ibm.hireType || "",
+      resourceType: ibm.resourceType || "",
       wbsId: ibm.wbsId,
       activityCode: ibm.activityCode || "",
       workitems: ibm.workitems,
@@ -2170,7 +2312,7 @@ function mergeRecords(ibmRecords, clarityRecords, manualMatches) {
       clarityOnly.push({
         id: c.normalizedName, name: c.rawName, normalizedName: c.normalizedName,
         clarityName: c.rawName, email:"", talentId:"", serialId:"", country:"",
-        billingCode:"", wbsId:"", activityCode:"", workitems:[], claimMonths:[],
+        billingCode:"", billingRate:0, hireType:"", resourceType:"", wbsId:"", activityCode:"", workitems:[], claimMonths:[],
         scheduledHours:0, dayHours:{sat:0,sun:0,mon:0,tue:0,wed:0,thu:0,fri:0},
         weeklyBreakdown:[], monthlyHours:c.monthlyHours||{}, actualHours:c.actualHours, resourceManager:c.resourceManager,
         timesheetStatus:c.timesheetStatus, approvedBy:c.approvedBy,
@@ -2813,7 +2955,7 @@ function ImportModal({onImport, onClose}) {
   );
 }
 // ─── BULK BAR ─────────────────────────────────────────────────────────────────
-function BulkBar({selected,total,onSelectAll,onClearAll,onBulkNotif,onSendAll,onBulkTeams,onBulkEmail,bulkLoading,bulkProgress,notifications,bulkTeamsSent,bulkEmailSent}){
+function BulkBar({selected,total,onSelectAll,onClearAll,onBulkNotif,onSendAll,onBulkTeams,onBulkEmail,onBulkEmlDownload,bulkLoading,bulkProgress,notifications,bulkTeamsSent,bulkEmailSent}){
   const hasGen=selected.some(id=>notifications[id]);const hasSel=selected.length>0;
   const bBtn=(active,bg)=>({padding:"6px 12px",background:active?bg:IBM.gray70,color:active?"#fff":IBM.gray50,border:"none",cursor:active?"pointer":"not-allowed",fontSize:12,fontWeight:600});
   return(
@@ -2826,7 +2968,8 @@ function BulkBar({selected,total,onSelectAll,onClearAll,onBulkNotif,onSendAll,on
       {hasGen&&<button onClick={onSendAll} style={bBtn(true,IBM.purple60)}>✉ Send All</button>}
       <span style={{width:1,height:18,background:IBM.gray70,flexShrink:0}}/>
       <button onClick={onBulkTeams} disabled={!hasSel} style={bBtn(hasSel,bulkTeamsSent?"#464775":"#5b5ea6")}>{bulkTeamsSent?`✓ Teams (${selected.length})`:`💬 Teams (${selected.length})`}</button>
-      <button onClick={onBulkEmail} disabled={!hasSel} style={bBtn(hasSel,bulkEmailSent?IBM.green50:IBM.orange40)}>{bulkEmailSent?`✓ Email (${selected.length})`:`✉ Email (${selected.length})`}</button>
+      <button onClick={onBulkEmail} disabled={!hasSel} style={bBtn(hasSel,bulkEmailSent?IBM.green50:IBM.orange40)} title="Open each draft in your default mail client (Outlook)">{bulkEmailSent?`✓ Email (${selected.length})`:`✉ Email (${selected.length})`}</button>
+      <button onClick={onBulkEmlDownload} disabled={!hasSel} style={bBtn(hasSel,"#6929c4")} title="Download one .eml draft per user — double-click in Outlook to open as editable draft, or drag into the Drafts folder">📨 .eml Drafts ({selected.length})</button>
     </div>
   );
 }
@@ -2849,19 +2992,15 @@ function NameMatchPanel({users, setUsers, savedClarityRecs, onClose}) {
   const[selIBM,    setSelIBM]    = useState(null);
   const[selClarity,setSelClarity]= useState(null);
   const[linked,    setLinked]    = useState([]);
+  const[delinked,  setDelinked]  = useState([]); // IBM IDs queued to be stripped of Clarity data
   const[applyDone, setApplyDone] = useState(false);
 
   var activeIbmList = ibmTab === "unmatched" ? ibmOnly : bothMatched;
 
-  // Always guard: ibmRec/clarityRec could be undefined if id no longer in list
-  var ibmRec     = selIBM     ? (users.find(function(u){ return u.id === selIBM; }) || null) : null;
-  var clarityRec = selClarity ? (clarityPool.find(function(c){ return c.id === selClarity; }) || null) : null;
-
-  // If selection became stale, clear it
-  if (selIBM && !ibmRec)         { setTimeout(function(){ setSelIBM(null); }, 0); }
-  if (selClarity && !clarityRec) { setTimeout(function(){ setSelClarity(null); }, 0); }
-
   var ibmTab_isMatched = ibmTab === "matched";
+
+  // Always guard: ibmRec could be undefined if id no longer in list
+  var ibmRec = selIBM ? (users.find(function(u){ return u.id === selIBM; }) || null) : null;
 
   // Build clarity pool with normalized shape { id, name, clarityName, entered, timesheetStatus, resourceManager }
   var clarityPoolNorm = allClaritySource.map(function(c){
@@ -2883,6 +3022,26 @@ function NameMatchPanel({users, setUsers, savedClarityRecs, onClose}) {
   var clarityPool = ibmTab_isMatched
     ? clarityPoolNorm.filter(function(c){ return c.id !== selIBM; })
     : clarityPoolNorm; // show ALL for unmatched too — let user pick any Clarity name
+
+  // clarityRec must be declared AFTER clarityPool is defined above
+  var clarityRec = selClarity ? (clarityPool.find(function(c){ return c.id === selClarity; }) || null) : null;
+
+  // If selection became stale, clear it
+  if (selIBM && !ibmRec)         { setTimeout(function(){ setSelIBM(null); }, 0); }
+  if (selClarity && !clarityRec) { setTimeout(function(){ setSelClarity(null); }, 0); }
+
+  // Build map: clarityNormalizedId → IBM rawName it is already matched to in users
+  // Used to block linking a Clarity record to a differently-named IBM record
+  var clarityAlreadyMatchedMap = {};
+  users.forEach(function(u) {
+    if (u.dataSource !== "Both") return;
+    var cr = allClaritySource.find(function(c) {
+      return (c.rawName || c.name || "") === (u.clarityName || "");
+    });
+    if (cr) {
+      clarityAlreadyMatchedMap[cr.normalizedName || cr.id] = u.name;
+    }
+  });
 
   const[claritySearch, setClaritySearch] = useState("");
 
@@ -2922,6 +3081,9 @@ function NameMatchPanel({users, setUsers, savedClarityRecs, onClose}) {
 
   function addLink() {
     if (!selIBM || !selClarity) return;
+    // Block if Clarity record is already matched to a different-named IBM record
+    var existingForClarity = clarityAlreadyMatchedMap[selClarity];
+    if (existingForClarity && ibmRec && fuzzyMatchScore(ibmRec.name, existingForClarity) < 0.9) return;
     var newLinks = linked.filter(function(l){ return l.ibmId !== selIBM && l.clarityId !== selClarity; });
     newLinks.push({ ibmId: selIBM, clarityId: selClarity, isRelink: ibmTab === "matched" });
     setLinked(newLinks);
@@ -2935,10 +3097,30 @@ function NameMatchPanel({users, setUsers, savedClarityRecs, onClose}) {
   }
 
   function applyLinks() {
-    if (!linked.length) return;
+    if (!linked.length && !delinked.length) return;
     setUsers(function(prev){
       var next = prev.slice();
       var toRemoveIds = {};
+
+      // Process de-links: strip Clarity data and revert to IBM only
+      delinked.forEach(function(ibmId){
+        var ibmIdx = next.findIndex(function(u){ return u && u.id === ibmId; });
+        if (ibmIdx === -1) return;
+        var ibm = next[ibmIdx];
+        if (!ibm) return;
+        next[ibmIdx] = Object.assign({}, ibm, {
+          clarityName:     null,
+          entered:         0,
+          actualHours:     0,
+          monthlyHours:    {},
+          timesheetStatus: "Not in Clarity",
+          approvedBy:      "",
+          resourceActive:  "",
+          periods:         [],
+          clarityPeriods:  [],
+          dataSource:      "IBM only",
+        });
+      });
 
       linked.forEach(function(link){
         var ibmIdx = next.findIndex(function(u){ return u && u.id === link.ibmId; });
@@ -2995,11 +3177,12 @@ function NameMatchPanel({users, setUsers, savedClarityRecs, onClose}) {
       });
     });
     setLinked([]);
+    setDelinked([]);
     setApplyDone(true);
     setTimeout(function(){ onClose(); }, 900);
   }
 
-  var pendingCount = linked.length;
+  var pendingCount = linked.length + delinked.length;
 
   return (
     <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(22,22,22,.6)",zIndex:500,display:"flex",justifyContent:"flex-end"}} onClick={onClose}>
@@ -3034,6 +3217,17 @@ function NameMatchPanel({users, setUsers, savedClarityRecs, onClose}) {
                     <span style={{color:IBM.gray40}}>&#8596;</span>
                     <b style={{color:IBM.purple60}}>{cl.name}</b>
                     <button onClick={function(){ removeLink(l.ibmId); }} style={{background:"none",border:"none",color:IBM.red60,cursor:"pointer",fontSize:13,lineHeight:1,padding:"0 1px"}}>&#x2715;</button>
+                  </span>
+                );
+              })}
+              {delinked.map(function(ibmId){
+                var ib = users.find(function(u){ return u && u.id===ibmId; });
+                if (!ib) return null;
+                return (
+                  <span key={"delink-"+ibmId} style={{fontSize:11,background:"#fff",border:"1px solid "+IBM.red60,padding:"2px 8px",color:IBM.gray80,display:"inline-flex",alignItems:"center",gap:6}}>
+                    <b style={{color:IBM.blue60}}>{ib.name}</b>
+                    <span style={{color:IBM.red60,fontWeight:700}}>&#8594; IBM only</span>
+                    <button onClick={function(){ setDelinked(function(p){ return p.filter(function(x){ return x!==ibmId; }); }); }} style={{background:"none",border:"none",color:IBM.red60,cursor:"pointer",fontSize:13,lineHeight:1,padding:"0 1px"}}>&#x2715;</button>
                   </span>
                 );
               })}
@@ -3085,14 +3279,15 @@ function NameMatchPanel({users, setUsers, savedClarityRecs, onClose}) {
               )}
               {ibmFiltered.map(function(u){
                 if (!u || !u.id) return null;
-                var isSelected = selIBM === u.id;
-                var isQueued   = linked.some(function(l){ return l.ibmId === u.id; });
+                var isSelected  = selIBM === u.id;
+                var isQueued    = linked.some(function(l){ return l.ibmId === u.id; });
+                var isDelinked  = delinked.indexOf(u.id) !== -1;
                 return (
                   <div key={u.id}
-                    onClick={function(){ if (!isQueued || ibmTab==="matched") { setSelIBM(isSelected ? null : u.id); setSelClarity(null); setClaritySearch(""); } }}
-                    style={{padding:"11px 16px",borderBottom:"1px solid "+IBM.gray20,cursor:isQueued&&ibmTab==="unmatched"?"default":"pointer",
-                      background:isQueued?IBM.green10:isSelected?IBM.blue10:"#fff",
-                      borderLeft:isQueued?"3px solid "+IBM.green50:isSelected?"3px solid "+IBM.blue60:"3px solid transparent",
+                    onClick={function(){ if (isDelinked) return; if (!isQueued || ibmTab==="matched") { setSelIBM(isSelected ? null : u.id); setSelClarity(null); setClaritySearch(""); } }}
+                    style={{padding:"11px 16px",borderBottom:"1px solid "+IBM.gray20,cursor:isDelinked||isQueued&&ibmTab==="unmatched"?"default":"pointer",
+                      background:isDelinked?"#fff5f5":isQueued?IBM.green10:isSelected?IBM.blue10:"#fff",
+                      borderLeft:isDelinked?"3px solid "+IBM.red60:isQueued?"3px solid "+IBM.green50:isSelected?"3px solid "+IBM.blue60:"3px solid transparent",
                       transition:"background 0.1s"}}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
                       <div style={{flex:1,minWidth:0}}>
@@ -3112,9 +3307,24 @@ function NameMatchPanel({users, setUsers, savedClarityRecs, onClose}) {
                         {ibmTab==="unmatched"?"IBM":"AUTO"}
                       </span>
                     </div>
-                    {isSelected && !isQueued && (
+                    {isSelected && !isQueued && ibmTab === "unmatched" && (
                       <div style={{fontSize:11,color:IBM.blue60,marginTop:5,fontWeight:600}}>
                         &#8594; Now select the correct Clarity name on the right
+                      </div>
+                    )}
+                    {isSelected && !isQueued && ibmTab === "matched" && (
+                      <div style={{marginTop:6,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                        <span style={{fontSize:11,color:IBM.orange40,fontWeight:600}}>&#8594; Select a new Clarity name, or:</span>
+                        <button
+                          onClick={function(e){
+                            e.stopPropagation();
+                            setDelinked(function(p){ return p.indexOf(u.id)===-1 ? p.concat([u.id]) : p; });
+                            setSelIBM(null);
+                            setSelClarity(null);
+                          }}
+                          style={{padding:"3px 10px",background:IBM.red60,color:"#fff",border:"none",cursor:"pointer",fontSize:11,fontWeight:700}}>
+                          &#x2715; De-link (set IBM only)
+                        </button>
                       </div>
                     )}
                     {isQueued && (
@@ -3124,6 +3334,13 @@ function NameMatchPanel({users, setUsers, savedClarityRecs, onClose}) {
                         </span>
                         <button onClick={function(e){ e.stopPropagation(); removeLink(u.id); }}
                           style={{background:"none",border:"1px solid "+IBM.red60,color:IBM.red60,padding:"2px 8px",cursor:"pointer",fontSize:10}}>Undo</button>
+                      </div>
+                    )}
+                    {isDelinked && (
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:4}}>
+                        <span style={{fontSize:11,color:IBM.red60,fontWeight:600}}>&#x2715; Will be set to IBM only</span>
+                        <button onClick={function(e){ e.stopPropagation(); setDelinked(function(p){ return p.filter(function(x){ return x!==u.id; }); }); }}
+                          style={{background:"none",border:"1px solid "+IBM.gray40,color:IBM.gray60,padding:"2px 8px",cursor:"pointer",fontSize:10}}>Undo</button>
                       </div>
                     )}
                   </div>
@@ -3160,15 +3377,22 @@ function NameMatchPanel({users, setUsers, savedClarityRecs, onClose}) {
                 var pct      = Math.round(score * 100);
                 var isSelected   = selClarity === c.id;
                 var alreadyLinked = linked.some(function(l){ return l.clarityId === c.id; });
+                // Block if this Clarity record is already matched to a DIFFERENT-named IBM record
+                var existingIBMName = clarityAlreadyMatchedMap[c.id];
+                var blockedByDifferentName = !!(existingIBMName && ibmRec &&
+                  fuzzyMatchScore(ibmRec.name, existingIBMName) < 0.9);
+                var isBlocked = alreadyLinked || blockedByDifferentName;
                 var barColor = pct >= 85 ? IBM.green50 : pct >= 55 ? IBM.orange40 : IBM.gray40;
+                var canInlineConfirm = selIBM && !isBlocked && !alreadyLinked &&
+                  !(existingIBMName && ibmRec && fuzzyMatchScore(ibmRec.name, existingIBMName) < 0.9);
                 return (
                   <div key={c.id}
-                    onClick={function(){ if (!alreadyLinked && selIBM) setSelClarity(isSelected ? null : c.id); }}
+                    onClick={function(){ if (!isBlocked && selIBM) setSelClarity(isSelected ? null : c.id); }}
                     style={{padding:"11px 16px",borderBottom:"1px solid "+IBM.gray20,
-                      cursor: alreadyLinked || !selIBM ? "default" : "pointer",
-                      background: alreadyLinked ? IBM.gray10 : isSelected ? IBM.purple10 : "#fff",
-                      borderLeft: isSelected ? "3px solid "+IBM.purple60 : alreadyLinked ? "3px solid "+IBM.gray30 : "3px solid transparent",
-                      opacity: alreadyLinked ? 0.5 : 1}}>
+                      cursor: isBlocked || !selIBM ? "default" : "pointer",
+                      background: blockedByDifferentName ? "#fff5f5" : alreadyLinked ? IBM.gray10 : isSelected ? IBM.purple10 : "#fff",
+                      borderLeft: isSelected ? "3px solid "+IBM.purple60 : blockedByDifferentName ? "3px solid "+IBM.red60 : alreadyLinked ? "3px solid "+IBM.gray30 : "3px solid transparent",
+                      opacity: isBlocked ? 0.6 : 1}}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
                       <div style={{flex:1,minWidth:0}}>
                         <div style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:IBM.gray100}}>{c.clarityName || c.name}</div>
@@ -3191,26 +3415,46 @@ function NameMatchPanel({users, setUsers, savedClarityRecs, onClose}) {
                           </div>
                         )}
                       </div>
-                      <span style={{fontSize:9,background:IBM.purple10,color:IBM.purple60,padding:"2px 6px",border:"1px solid #d4bbff",fontWeight:700,flexShrink:0}}>Clarity</span>
+                      <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:6,flexShrink:0}}>
+                        <span style={{fontSize:9,background:IBM.purple10,color:IBM.purple60,padding:"2px 6px",border:"1px solid #d4bbff",fontWeight:700}}>Clarity</span>
+                        {/* Inline confirm button — appears when this row is selected */}
+                        {isSelected && canInlineConfirm && (
+                          <button
+                            onClick={function(e){
+                              e.stopPropagation();
+                              // selClarity is already set (this row is selected), just call addLink
+                              addLink();
+                            }}
+                            style={{padding:"5px 10px",background:IBM.orange40,color:"#fff",border:"none",cursor:"pointer",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>
+                            &#10003; Confirm Link
+                          </button>
+                        )}
+                      </div>
                     </div>
-                    {alreadyLinked && <div style={{fontSize:10,color:IBM.gray50,marginTop:3}}>Already linked to another IBM record</div>}
+                    {alreadyLinked && !blockedByDifferentName && <div style={{fontSize:10,color:IBM.gray50,marginTop:3}}>Already linked to another IBM record</div>}
+                    {blockedByDifferentName && <div style={{fontSize:10,color:IBM.red60,marginTop:3,fontWeight:600}}>&#9888; Already matched to <b>{existingIBMName}</b> — different name</div>}
                   </div>
                 );
               })}
             </div>
 
             {/* Confirm link button */}
-            {selIBM && selClarity && ibmRec && clarityRec && (
-              <div style={{padding:"12px 16px",borderTop:"1px solid "+IBM.gray20,background:"#fff",flexShrink:0}}>
-                <div style={{fontSize:12,color:IBM.gray70,marginBottom:8}}>
-                  Link <b style={{color:IBM.blue60}}>{ibmRec.name}</b> &#8596; <b style={{color:IBM.purple60}}>{clarityRec.name}</b>
+            {(function(){
+              if (!selIBM || !selClarity || !ibmRec || !clarityRec) return null;
+              var existingMatch = clarityAlreadyMatchedMap[selClarity];
+              if (existingMatch && fuzzyMatchScore(ibmRec.name, existingMatch) < 0.9) return null;
+              return (
+                <div style={{padding:"12px 16px",borderTop:"1px solid "+IBM.gray20,background:"#fff",flexShrink:0}}>
+                  <div style={{fontSize:12,color:IBM.gray70,marginBottom:8}}>
+                    Link <b style={{color:IBM.blue60}}>{ibmRec.name}</b> &#8596; <b style={{color:IBM.purple60}}>{clarityRec.name}</b>
+                  </div>
+                  <button onClick={addLink}
+                    style={{width:"100%",padding:"10px",background:IBM.orange40,color:"#fff",border:"none",cursor:"pointer",fontSize:13,fontWeight:700}}>
+                    &#10003; Confirm Link
+                  </button>
                 </div>
-                <button onClick={addLink}
-                  style={{width:"100%",padding:"10px",background:IBM.orange40,color:"#fff",border:"none",cursor:"pointer",fontSize:13,fontWeight:700}}>
-                  &#10003; Confirm Link
-                </button>
-              </div>
-            )}
+              );
+            })()}
           </div>
         </div>
       </div>
@@ -3572,6 +3816,412 @@ function UserManagementTab({session, showToast}) {
 }
 
 
+// ─── BILL RATE VALIDATION TAB ─────────────────────────────────────────────────
+// Parses a Labor Claim Details XLSX (same 67-col schema as IBM timesheet files)
+// and builds an editable reference table of BillingCode → BillingRate mappings.
+// When IBM records are loaded the validation panel cross-checks every person.
+function parseBillRateFile(file){
+  return new Promise(function(resolve, reject){
+    var reader = new FileReader();
+    reader.onload = function(e){
+      try{
+        var wb = XLSX.read(new Uint8Array(e.target.result), {type:"array"});
+        // Prefer Sheet1; fall back to first sheet
+        var sn = wb.SheetNames.includes("Sheet1") ? "Sheet1" : wb.SheetNames[0];
+        var ws = wb.Sheets[sn];
+        var rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:""});
+        if(rows.length < 2){ resolve([]); return; }
+        // Build column-index lookup (case-insensitive)
+        var hdr = rows[0].map(function(h){ return String(h).toLowerCase().trim(); });
+        function ci(names){ for(var i=0;i<names.length;i++){ var idx=hdr.indexOf(names[i]); if(idx>-1) return idx; } return -1; }
+        var COL = {
+          name:     ci(["name"]),
+          billCode: ci(["billing code"]),
+          billRate: ci(["billing rate"]),
+          hireType: ci(["hire type"]),
+          resType:  ci(["resource type"]),
+          country:  ci(["resource country name","country"]),
+          wbsId:    ci(["wbs id","original account id","wbs short"]),
+          serial:   ci(["resource talentid (serial)","serial"]),
+        };
+        var entries = [];
+        var seen = {};
+        for(var i=1; i<rows.length; i++){
+          var r = rows[i];
+          var code = String(r[COL.billCode]||"").trim();
+          var rate = parseFloat(r[COL.billRate])||0;
+          var hire = String(r[COL.hireType]||"").trim();
+          var res  = String(r[COL.resType]||"").trim();
+          var cntry= String(r[COL.country]||"").trim();
+          var wbs  = String(r[COL.wbsId]||"").trim();
+          if(!code) continue;
+          // Deduplicate by composite key within this file
+          var key = [wbs,code,hire,res,cntry].join("|");
+          if(seen[key]) continue;
+          seen[key] = true;
+          entries.push({
+            id: key+"_"+Date.now()+"_"+i,
+            wbsId: wbs, billingCode: code, billingRate: rate,
+            hireType: hire, resourceType: res, country: cntry,
+            source: file.name,
+          });
+        }
+        resolve(entries);
+      } catch(ex){ reject(ex); }
+    };
+    reader.onerror = function(){ reject(new Error("File read error")); };
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+function validateUserBillRate(u, db){
+  if(!u.billingCode) return {status:"no_code"};
+  if(!db || !db.length) return {status:"no_db"};
+  var matches = db.filter(function(r){ return String(r.billingCode)===String(u.billingCode); });
+  if(!matches.length) return {status:"unknown"};
+  if(!u.billingRate) return {status:"no_rate", refs:matches};
+  var exact = matches.find(function(r){ return Math.abs(Number(r.billingRate)-Number(u.billingRate))<0.01; });
+  if(exact) return {status:"match", ref:exact};
+  return {status:"mismatch", refs:matches, actual:u.billingRate};
+}
+
+function BillRateTab({users, billRateDB, setBillRateDB, showToast}){
+  // XLSX is available via top-level ES module import
+  var [loadedFiles, setLoadedFiles]     = useState([]);
+  var [editingId,   setEditingId]       = useState(null);
+  var [editDraft,   setEditDraft]       = useState({});
+  var [showAdd,     setShowAdd]         = useState(false);
+  var [newRow,      setNewRow]          = useState({wbsId:"",billingCode:"",billingRate:"",hireType:"",resourceType:"",country:""});
+  var [filterCode,  setFilterCode]      = useState("");
+  var [filterWbs,   setFilterWbs]       = useState("");
+  var [dragOver,    setDragOver]        = useState(false);
+  var [valTab,      setValTab]          = useState("all"); // all|mismatch|unknown|match
+
+  var filteredDB = useMemo(function(){
+    var q = filterCode.toLowerCase(), w = filterWbs.toLowerCase();
+    return billRateDB.filter(function(r){
+      return (!q || String(r.billingCode).toLowerCase().includes(q))
+          && (!w || String(r.wbsId).toLowerCase().includes(w));
+    });
+  },[billRateDB, filterCode, filterWbs]);
+
+  // Build validation results for all IBM users
+  var valResults = useMemo(function(){
+    return users.filter(function(u){ return u.dataSource!=="Clarity only"; }).map(function(u){
+      return Object.assign({}, u, {_val: validateUserBillRate(u, billRateDB)});
+    });
+  },[users, billRateDB]);
+
+  var valCounts = useMemo(function(){
+    var c={match:0,mismatch:0,unknown:0,no_code:0,no_rate:0};
+    valResults.forEach(function(u){ var s=u._val.status; c[s]=(c[s]||0)+1; });
+    return c;
+  },[valResults]);
+
+  var filteredVal = useMemo(function(){
+    if(valTab==="all") return valResults;
+    if(valTab==="mismatch") return valResults.filter(function(u){ return u._val.status==="mismatch"; });
+    if(valTab==="unknown") return valResults.filter(function(u){ return u._val.status==="unknown"||u._val.status==="no_code"||u._val.status==="no_rate"; });
+    if(valTab==="match") return valResults.filter(function(u){ return u._val.status==="match"; });
+    return valResults;
+  },[valResults, valTab]);
+
+  function handleFileDrop(files){
+    var arr = Array.from(files).filter(function(f){ return f.name.endsWith(".xlsx")||f.name.endsWith(".xls"); });
+    if(!arr.length){ showToast("Please upload .xlsx files","error"); return; }
+    var promises = arr.map(function(f){ return parseBillRateFile(f); });
+    Promise.all(promises).then(function(results){
+      var all = [].concat.apply([], results);
+      var added = 0;
+      setBillRateDB(function(prev){
+        var next = prev.slice();
+        all.forEach(function(entry){
+          var dup = next.find(function(e){ return e.wbsId===entry.wbsId&&e.billingCode===entry.billingCode&&e.hireType===entry.hireType&&e.resourceType===entry.resourceType&&e.country===entry.country; });
+          if(!dup){ next.push(entry); added++; }
+        });
+        return next;
+      });
+      setLoadedFiles(function(p){ return p.concat(arr.map(function(f){ return {name:f.name,rows:all.length}; })); });
+      showToast("✓ Loaded "+arr.length+" file(s) — "+added+" new entries added");
+    }).catch(function(err){ showToast("Error reading file: "+err.message,"error"); });
+  }
+
+  function handleExport(){
+    var wsData = [["WBS ID","Billing Code","Billing Rate","Hire Type","Resource Type","Country","Source"]];
+    billRateDB.forEach(function(r){
+      wsData.push([r.wbsId,r.billingCode,r.billingRate,r.hireType,r.resourceType,r.country,r.source||""]);
+    });
+    var ws = XLSX.utils.aoa_to_sheet(wsData);
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "BillRateReference");
+    XLSX.writeFile(wb, "BillRate_Reference_"+new Date().toISOString().slice(0,10)+".xlsx");
+    showToast("⬇ Exported "+billRateDB.length+" entries");
+  }
+
+  function startEdit(row){ setEditingId(row.id); setEditDraft(Object.assign({},row)); }
+  function saveEdit(){
+    setBillRateDB(function(p){ return p.map(function(r){ return r.id===editingId?Object.assign({},r,editDraft):r; }); });
+    setEditingId(null); showToast("✓ Updated");
+  }
+  function deleteRow(id){
+    setBillRateDB(function(p){ return p.filter(function(r){ return r.id!==id; }); });
+    showToast("Deleted entry");
+  }
+  function addRow(){
+    if(!newRow.billingCode){ showToast("Billing Code is required","error"); return; }
+    var entry = Object.assign({},newRow,{id:"manual_"+Date.now(),source:"Manual",billingRate:parseFloat(newRow.billingRate)||0});
+    setBillRateDB(function(p){ return [...p, entry]; });
+    setNewRow({wbsId:"",billingCode:"",billingRate:"",hireType:"",resourceType:"",country:""});
+    setShowAdd(false); showToast("✓ Added new bill rate entry");
+  }
+
+  var TH2 = {background:IBM.gray10,padding:"7px 10px",fontSize:11,fontWeight:600,textAlign:"left",borderBottom:"2px solid "+IBM.gray20,whiteSpace:"nowrap"};
+  var TD2 = function(alt){ return {padding:"6px 10px",borderBottom:"1px solid "+IBM.gray10,fontSize:12,background:alt?IBM.gray10:"#fff",verticalAlign:"middle"}; };
+  var INP = {border:"1px solid "+IBM.blue40,padding:"3px 6px",fontSize:12,width:"100%",boxSizing:"border-box"};
+
+  var valStatusStyle = function(status){
+    if(status==="match") return {background:IBM.green10,color:IBM.green50,border:"1px solid "+IBM.green20,padding:"2px 7px",fontWeight:700,fontSize:11};
+    if(status==="mismatch") return {background:IBM.red10,color:IBM.red60,border:"1px solid #ffb3b8",padding:"2px 7px",fontWeight:700,fontSize:11};
+    if(status==="unknown"||status==="no_code"||status==="no_rate") return {background:IBM.yellow10,color:"#8e6a00",border:"1px solid "+IBM.yellow30,padding:"2px 7px",fontWeight:700,fontSize:11};
+    return {background:IBM.gray10,color:IBM.gray60,padding:"2px 7px",fontSize:11};
+  };
+  var valStatusLabel = function(status){
+    return {match:"✅ Match",mismatch:"❌ Mismatch",unknown:"⚠ Unknown",no_code:"— No Code",no_rate:"? No Rate",no_db:"— No DB"}[status]||status;
+  };
+
+  return (
+    <div style={{padding:"24px 28px",fontFamily:FF_SANS}}>
+      {/* ── Header ── */}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:20,flexWrap:"wrap",gap:8}}>
+        <div>
+          <div style={{fontSize:20,fontWeight:700,color:IBM.gray100}}>💰 Bill Rate Validation</div>
+          <div style={{fontSize:13,color:IBM.gray60,marginTop:3}}>Load Labor Claim Detail files as your billing reference database — edit, validate, and export</div>
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          {billRateDB.length>0&&<button onClick={handleExport} style={{padding:"8px 16px",background:"#0e6027",color:"#fff",border:"none",cursor:"pointer",fontSize:13,fontWeight:600}}>⬇ Export Reference (.xlsx)</button>}
+          <button onClick={function(){ setBillRateDB([]); setLoadedFiles([]); showToast("Reference cleared"); }} style={{padding:"8px 14px",background:"none",border:"1px solid "+IBM.red40,color:IBM.red60,cursor:"pointer",fontSize:12}} disabled={!billRateDB.length}>🗑 Clear All</button>
+        </div>
+      </div>
+
+      {/* ── Upload zone ── */}
+      <div
+        onDragOver={function(e){e.preventDefault();setDragOver(true);}}
+        onDragLeave={function(){setDragOver(false);}}
+        onDrop={function(e){e.preventDefault();setDragOver(false);handleFileDrop(e.dataTransfer.files);}}
+        style={{border:"2px dashed "+(dragOver?IBM.blue60:IBM.gray30),borderRadius:4,padding:"20px 24px",marginBottom:20,background:dragOver?IBM.blue10:"#fafafa",textAlign:"center",cursor:"pointer",transition:"all 0.15s"}}
+        onClick={function(){ document.getElementById("br-file-input").click(); }}>
+        <div style={{fontSize:14,color:dragOver?IBM.blue60:IBM.gray70,fontWeight:600}}>📂 Drop Labor Claim Details (.xlsx) here or click to browse</div>
+        <div style={{fontSize:12,color:IBM.gray50,marginTop:4}}>Supports multiple files — RATT8, RAVDD, RAT8W, etc.</div>
+        <input id="br-file-input" type="file" accept=".xlsx,.xls" multiple style={{display:"none"}}
+          onChange={function(e){ handleFileDrop(e.target.files); e.target.value=""; }}/>
+      </div>
+
+      {loadedFiles.length>0&&(
+        <div style={{marginBottom:16,display:"flex",flexWrap:"wrap",gap:6}}>
+          {loadedFiles.map(function(f,i){ return (
+            <span key={i} style={{background:IBM.blue10,color:IBM.blue60,border:"1px solid "+IBM.blue20,padding:"3px 10px",fontSize:11,fontWeight:600}}>
+              📄 {f.name}
+            </span>
+          );})}
+        </div>
+      )}
+
+      {/* ── Reference table ── */}
+      <div style={{background:"#fff",border:"1px solid "+IBM.gray20,borderRadius:4,marginBottom:24}}>
+        <div style={{padding:"12px 16px",borderBottom:"1px solid "+IBM.gray20,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
+          <div style={{display:"flex",alignItems:"center",gap:12}}>
+            <span style={{fontWeight:700,fontSize:14}}>Reference Table</span>
+            <span style={{background:IBM.blue10,color:IBM.blue60,padding:"2px 8px",fontSize:11,fontWeight:700,border:"1px solid "+IBM.blue20}}>{filteredDB.length} entries</span>
+          </div>
+          <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+            <input value={filterWbs} onChange={function(e){setFilterWbs(e.target.value);}} placeholder="Filter by WBS…" style={{border:"1px solid "+IBM.gray30,padding:"5px 10px",fontSize:12,width:130}}/>
+            <input value={filterCode} onChange={function(e){setFilterCode(e.target.value);}} placeholder="Filter by code…" style={{border:"1px solid "+IBM.gray30,padding:"5px 10px",fontSize:12,width:130}}/>
+            <button onClick={function(){ setShowAdd(function(v){return !v;}); }} style={{padding:"6px 14px",background:IBM.blue60,color:"#fff",border:"none",cursor:"pointer",fontSize:12,fontWeight:600}}>+ Add Entry</button>
+          </div>
+        </div>
+
+        {showAdd&&(
+          <div style={{padding:"12px 16px",background:IBM.blue10,borderBottom:"1px solid "+IBM.blue20,display:"flex",gap:8,flexWrap:"wrap",alignItems:"flex-end"}}>
+            {[["wbsId","WBS ID"],["billingCode","Bill Code *"],["billingRate","Bill Rate"],["hireType","Hire Type"],["resourceType","Resource Type"],["country","Country"]].map(function(f){ return (
+              <div key={f[0]} style={{display:"flex",flexDirection:"column",gap:3}}>
+                <label style={{fontSize:10,fontWeight:600,color:IBM.gray70}}>{f[1]}</label>
+                <input value={newRow[f[0]]} onChange={function(e){ var v=e.target.value; setNewRow(function(p){ var n=Object.assign({},p); n[f[0]]=v; return n; }); }}
+                  style={{border:"1px solid "+IBM.blue40,padding:"4px 8px",fontSize:12,width:110}}/>
+              </div>
+            );})}
+            <button onClick={addRow} style={{padding:"6px 14px",background:"#0e6027",color:"#fff",border:"none",cursor:"pointer",fontSize:12,fontWeight:600,alignSelf:"flex-end"}}>✓ Add</button>
+            <button onClick={function(){setShowAdd(false);}} style={{padding:"6px 12px",background:"none",border:"1px solid "+IBM.gray30,color:IBM.gray70,cursor:"pointer",fontSize:12,alignSelf:"flex-end"}}>Cancel</button>
+          </div>
+        )}
+
+        {billRateDB.length===0?(
+          <div style={{padding:"32px",textAlign:"center",color:IBM.gray50,fontSize:13}}>No reference data loaded yet. Upload a Labor Claim Details file above to get started.</div>
+        ):(
+          <div style={{overflowX:"auto"}}>
+            <table style={{width:"100%",borderCollapse:"collapse"}}>
+              <thead><tr>
+                {["WBS ID","Bill Code","Bill Rate ($/hr)","Hire Type","Resource Type","Country","Source","Actions"].map(function(h){
+                  return <th key={h} style={TH2}>{h}</th>;
+                })}
+              </tr></thead>
+              <tbody>
+                {filteredDB.map(function(row, idx){
+                  var isEdit = editingId===row.id;
+                  var alt = idx%2;
+                  return (
+                    <tr key={row.id}>
+                      {["wbsId","billingCode","billingRate","hireType","resourceType","country","source"].map(function(f){
+                        return (
+                          <td key={f} style={TD2(alt)}>
+                            {isEdit&&f!=="source"?(
+                              <input value={editDraft[f]||""} onChange={function(e){ var v=e.target.value; setEditDraft(function(p){ var n=Object.assign({},p); n[f]=v; return n; }); }} style={INP}/>
+                            ):(
+                              f==="billingRate"?<b style={{color:IBM.blue70}}>${Number(row[f]||0).toFixed(2)}</b>:
+                              f==="billingCode"?<span style={{fontWeight:700,background:IBM.blue10,color:IBM.blue70,padding:"2px 8px",border:"1px solid "+IBM.blue20}}>{row[f]||"—"}</span>:
+                              <span style={{color:IBM.gray70}}>{row[f]||"—"}</span>
+                            )}
+                          </td>
+                        );
+                      })}
+                      <td style={TD2(alt)}>
+                        {isEdit?(
+                          <div style={{display:"flex",gap:4}}>
+                            <button onClick={saveEdit} style={{padding:"3px 8px",background:"#0e6027",color:"#fff",border:"none",cursor:"pointer",fontSize:11,fontWeight:600}}>✓ Save</button>
+                            <button onClick={function(){setEditingId(null);}} style={{padding:"3px 8px",background:"none",border:"1px solid "+IBM.gray30,color:IBM.gray70,cursor:"pointer",fontSize:11}}>Cancel</button>
+                          </div>
+                        ):(
+                          <div style={{display:"flex",gap:4}}>
+                            <button onClick={function(){startEdit(row);}} style={{padding:"3px 8px",background:IBM.blue10,color:IBM.blue60,border:"1px solid "+IBM.blue20,cursor:"pointer",fontSize:11,fontWeight:600}}>✏ Edit</button>
+                            <button onClick={function(){deleteRow(row.id);}} style={{padding:"3px 8px",background:IBM.red10,color:IBM.red60,border:"1px solid #ffb3b8",cursor:"pointer",fontSize:11}}>🗑</button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* ── Validation results ── */}
+      {users.length>0&&(
+        <div style={{background:"#fff",border:"1px solid "+IBM.gray20,borderRadius:4}}>
+          <div style={{padding:"12px 16px",borderBottom:"1px solid "+IBM.gray20}}>
+            <div style={{fontWeight:700,fontSize:14,marginBottom:8}}>Validation Results — IBM Records vs Reference</div>
+            {/* Summary chips */}
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              {[["all","All",IBM.gray70,IBM.gray10],["match","✅ Match",IBM.green50,IBM.green10],["mismatch","❌ Mismatch",IBM.red60,IBM.red10],["unknown","⚠ Unknown","#8e6a00",IBM.yellow10]].map(function(item){
+                var count = item[0]==="all"?valResults.length:item[0]==="match"?valCounts.match:item[0]==="mismatch"?valCounts.mismatch:(valCounts.unknown||0)+(valCounts.no_code||0)+(valCounts.no_rate||0);
+                return (
+                  <button key={item[0]} onClick={function(){setValTab(item[0]);}} style={{
+                    padding:"4px 12px",border:"1px solid "+(valTab===item[0]?item[2]:IBM.gray20),
+                    background:valTab===item[0]?item[3]:"#fff",color:valTab===item[0]?item[2]:IBM.gray60,
+                    cursor:"pointer",fontSize:12,fontWeight:valTab===item[0]?700:400
+                  }}>{item[1]} <b style={{marginLeft:4}}>{count}</b></button>
+                );
+              })}
+            </div>
+          </div>
+          {billRateDB.length===0?(
+            <div style={{padding:"20px 24px",color:IBM.gray50,fontSize:13,fontStyle:"italic"}}>Load reference data above to start validating billing rates.</div>
+          ):(
+            <div style={{overflowX:"auto"}}>
+              <table style={{width:"100%",borderCollapse:"collapse"}}>
+                <thead><tr>
+                  {["Name","WBS ID","Hire Type","Resource Type","Billing Code","IBM Rate","Expected Rate(s)","Status"].map(function(h){
+                    return <th key={h} style={TH2}>{h}</th>;
+                  })}
+                </tr></thead>
+                <tbody>
+                  {filteredVal.length===0&&<tr><td colSpan={8} style={{padding:"20px",textAlign:"center",color:IBM.gray50,fontSize:13}}>No records in this category.</td></tr>}
+                  {filteredVal.map(function(u, idx){
+                    var v = u._val;
+                    var refs = v.refs||[];
+                    var expectedRates = refs.map(function(r){ return "$"+Number(r.billingRate).toFixed(2); }).join(", ");
+                    return (
+                      <tr key={u.id}>
+                        <td style={TD2(idx%2)}><span style={{fontWeight:600}}>{u.name}</span></td>
+                        <td style={TD2(idx%2)}><span style={{fontSize:11,color:IBM.gray60}}>{u.wbsId||"—"}</span></td>
+                        <td style={TD2(idx%2)}><span style={{fontSize:11}}>{u.hireType||"—"}</span></td>
+                        <td style={TD2(idx%2)}><span style={{fontSize:11}}>{u.resourceType||"—"}</span></td>
+                        <td style={TD2(idx%2)}>
+                          {u.billingCode?<span style={{background:IBM.blue10,color:IBM.blue70,padding:"2px 7px",fontSize:11,fontWeight:700,border:"1px solid "+IBM.blue20}}>{u.billingCode}</span>:<span style={{color:IBM.gray30}}>—</span>}
+                        </td>
+                        <td style={TD2(idx%2)}>
+                          {u.billingRate?<b style={{color:v.status==="mismatch"?IBM.red60:IBM.gray100}}>${Number(u.billingRate).toFixed(2)}</b>:<span style={{color:IBM.gray30}}>—</span>}
+                        </td>
+                        <td style={TD2(idx%2)}>
+                          {expectedRates?<span style={{fontSize:12,color:IBM.green50,fontWeight:600}}>{expectedRates}</span>:<span style={{color:IBM.gray30,fontSize:11}}>—</span>}
+                        </td>
+                        <td style={TD2(idx%2)}>
+                          <span style={valStatusStyle(v.status)}>{valStatusLabel(v.status)}</span>
+                          {v.status==="mismatch"&&<div style={{fontSize:10,color:IBM.red60,marginTop:2}}>Diff: ${Math.abs(Number(u.billingRate)-(Number(refs[0]&&refs[0].billingRate)||0)).toFixed(2)}</div>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── CHANGE PASSWORD PANEL (proper component to satisfy Rules of Hooks) ───────
+function ChangePasswordPanel({session}) {
+  const[ownPw,     setOwnPw]     = useState("");
+  const[ownPw2,    setOwnPw2]    = useState("");
+  const[ownPwErr,  setOwnPwErr]  = useState("");
+  const[ownPwOk,   setOwnPwOk]   = useState(false);
+  const[ownPwSaving,setOwnPwSaving] = useState(false);
+
+  async function handleOwnPw(){
+    setOwnPwErr("");
+    if(!ownPw){setOwnPwErr("Enter a new password.");return;}
+    if(ownPw.length<8){setOwnPwErr("Password must be at least 8 characters.");return;}
+    if(ownPw!==ownPw2){setOwnPwErr("Passwords do not match.");return;}
+    setOwnPwSaving(true);
+    try {
+      var allUsers=await getAllUsers();
+      var me=allUsers.find(function(u){return u.username===session.username;});
+      if(!me){setOwnPwErr("User not found.");setOwnPwSaving(false);return;}
+      var hashed=await hashPassword(session.username,ownPw);
+      await updateUser(me.id,{password_hash:hashed});
+      setOwnPwOk(true);setOwnPw("");setOwnPw2("");
+      setTimeout(function(){setOwnPwOk(false);},3000);
+    } catch(ex){ setOwnPwErr(ex.message||"Failed"); }
+    setOwnPwSaving(false);
+  }
+  return (
+    <div style={{background:"#fff",border:"1px solid "+IBM.gray20,marginBottom:20}}>
+      <div style={{background:IBM.orange40,color:"#fff",padding:"12px 20px",fontSize:13,fontWeight:600}}>&#128274; Change Your Password</div>
+      <div style={{padding:"18px 20px",display:"flex",gap:14,flexWrap:"wrap",alignItems:"flex-end"}}>
+        <div>
+          <label style={{fontSize:11,fontWeight:600,textTransform:"uppercase",color:IBM.gray70,display:"block",marginBottom:5,letterSpacing:"0.07em"}}>New Password</label>
+          <input type="password" value={ownPw} onChange={function(e){setOwnPw(e.target.value);setOwnPwErr("");}} placeholder="Min 8 characters"
+            style={{padding:"8px 12px",border:"1px solid "+IBM.gray30,fontSize:13,outline:"none",width:200}}/>
+        </div>
+        <div>
+          <label style={{fontSize:11,fontWeight:600,textTransform:"uppercase",color:IBM.gray70,display:"block",marginBottom:5,letterSpacing:"0.07em"}}>Confirm</label>
+          <input type="password" value={ownPw2} onChange={function(e){setOwnPw2(e.target.value);setOwnPwErr("");}} placeholder="Re-enter"
+            style={{padding:"8px 12px",border:"1px solid "+IBM.gray30,fontSize:13,outline:"none",width:200}}/>
+        </div>
+        <button onClick={handleOwnPw} disabled={ownPwSaving}
+          style={{padding:"9px 18px",background:ownPwSaving?IBM.gray30:IBM.orange40,color:"#fff",border:"none",cursor:"pointer",fontSize:13,fontWeight:600,flexShrink:0}}>
+          {ownPwSaving?"Saving…":"Update Password"}
+        </button>
+      </div>
+      {ownPwErr&&<div style={{margin:"0 20px 14px",padding:"8px 12px",background:"#fff1f1",border:"1px solid #ffb3b8",color:IBM.red60,fontSize:12}}>&#9888; {ownPwErr}</div>}
+      {ownPwOk&&<div style={{margin:"0 20px 14px",padding:"8px 12px",background:IBM.green10,border:"1px solid "+IBM.green20,color:IBM.green50,fontSize:12,fontWeight:600}}>&#10003; Password updated successfully!</div>}
+    </div>
+  );
+}
+
 // ─── MANAGER APP ──────────────────────────────────────────────────────────────
 function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarEvents}){
   const now=new Date();
@@ -3597,6 +4247,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
   const[showNameMatch,setShowNameMatch]=useState(false);
   const[filterRM,setFilterRM]=useState("");        // resource manager filter
   const[filterWBS,setFilterWBS]=useState("");      // WBS/project filter
+  const[billRateDB,setBillRateDB]=useState([]);   // Bill rate reference database
   const[filterSource,setFilterSource]=useState("all"); // all|Both|IBM only|Clarity only
   const[confirmDelete,setConfirmDelete]=useState(null); // user id to delete
   const[emailLog,setEmailLog]=useState([]);
@@ -3606,6 +4257,8 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
   const[mgrPhone,setMgrPhone]=useState("");
   const[mgrSaved,setMgrSaved]=useState(false);
   const[savedClarityRecs,setSavedClarityRecs]=useState([]); // persisted after import for Re-link dropdown
+  const[relinkUserId,setRelinkUserId]=useState(null); // normalizedName of row showing re-link dropdown in records table
+  const[manualMatches,setManualMatches]=useState({}); // {ibmNormName: clarityNormName} for re-linking in records table
 
   const periodLabel=(PERIODS.find(p=>p.value===selPeriod)||{label:selPeriod}).label;
   const monthLabel=`${selMonth} ${selYear}`;
@@ -3638,6 +4291,9 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
         serialId: r.serialId || "",
         country: r.country || "",
         billingCode: r.billingCode || "",
+        billingRate: r.billingRate || 0,
+        hireType: r.hireType || "",
+        resourceType: r.resourceType || "",
         wbsId: r.wbsId || "",
         claimMonths: r.claimMonths || [],
         timesheetStatus: r.timesheetStatus || "",
@@ -3744,7 +4400,65 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
   },[users,filterStatus,filterSource,search,filterRM,filterWBS,sortMode,showAllMonths,selMonth,selYear]);
 
   const handleGenNotif=u=>{if(getStatus(u)==="green")return;setNotifications(p=>({...p,[u.id]:genNotifForUser(u,monthLabel,periodLabel)}));showToast(`✓ Ready for ${u.name}`);};
-  const handleSendEmail=u=>{const n=notifications[u.id]||genNotifForUser(u,monthLabel,periodLabel);setEmailLog(p=>[{id:Date.now(),type:"email",to:u.email,toName:u.name,subject:n.subject,sentAt:new Date().toLocaleString()},...p]);setNotifications(p=>({...p,[u.id]:n}));showToast("✉ Email sent to "+u.email);};
+  const handleSendEmail=u=>{
+    const n=notifications[u.id]||genNotifForUser(u,monthLabel,periodLabel);
+    if(!u.email){ showToast("No email address on file for "+u.name,"error"); return; }
+    openMailtoLink(buildMailtoUrl(u.email,n.subject,n.body));
+    setEmailLog(p=>[{id:Date.now(),type:"email",to:u.email,toName:u.name,subject:n.subject,sentAt:new Date().toLocaleString()},...p]);
+    setNotifications(p=>({...p,[u.id]:n}));
+    showToast("✉ Draft opened in mail client for "+u.name);
+  };
+  // Bulk: open each selected mismatched user's draft in the default mail
+  // client (Outlook). Most browsers only allow ~1-3 mailto: links per gesture,
+  // so for larger batches we fall back to .eml file download.
+  const handleBulkOpenMailto=()=>{
+    const targets=users.filter(u=>selected.includes(u.id)&&getStatus(u)!=="green"&&!!u.email);
+    if(!targets.length){ showToast("No mismatched users with email addresses selected","error"); return; }
+    if(targets.length>3){
+      showToast(targets.length+" selected — using .eml download (browsers block bulk mailto)");
+      handleBulkDownloadEml();
+      return;
+    }
+    const newNotifs={};
+    targets.forEach(u=>{ if(!notifications[u.id]) newNotifs[u.id]=genNotifForUser(u,monthLabel,periodLabel); });
+    if(Object.keys(newNotifs).length) setNotifications(p=>({...p,...newNotifs}));
+    targets.forEach((u,i)=>{
+      const n=notifications[u.id]||newNotifs[u.id];
+      setTimeout(function(){ openMailtoLink(buildMailtoUrl(u.email,n.subject,n.body)); }, i*450);
+    });
+    setEmailLog(p=>[
+      ...targets.map(u=>({id:Date.now()+Math.random(),type:"email",to:u.email,toName:u.name,subject:(notifications[u.id]||newNotifs[u.id]).subject,sentAt:new Date().toLocaleString()})),
+      ...p
+    ]);
+    setBulkEmailSent(true);
+    showToast("✉ Opening "+targets.length+" mail drafts…");
+  };
+  // Bulk: download an .eml draft per selected mismatched user. Outlook opens
+  // each as an editable draft; drag into the Drafts folder to stage for send.
+  const handleBulkDownloadEml=()=>{
+    const targets=users.filter(u=>selected.includes(u.id)&&getStatus(u)!=="green");
+    if(!targets.length){ showToast("No mismatched users selected","error"); return; }
+    const withEmail=targets.filter(u=>!!u.email);
+    if(!withEmail.length){ showToast("Selected users have no email addresses","error"); return; }
+    const newNotifs={};
+    withEmail.forEach(u=>{ if(!notifications[u.id]) newNotifs[u.id]=genNotifForUser(u,monthLabel,periodLabel); });
+    if(Object.keys(newNotifs).length) setNotifications(p=>({...p,...newNotifs}));
+    withEmail.forEach((u,i)=>{
+      const n=notifications[u.id]||newNotifs[u.id];
+      setTimeout(function(){
+        downloadTextFile("Timesheet_"+safeFileName(u.name)+".eml",
+                         buildEmlDraft(u.email,u.name,n.subject,n.body),
+                         "message/rfc822");
+      }, i*120);
+    });
+    setEmailLog(p=>[
+      ...withEmail.map(u=>({id:Date.now()+Math.random(),type:"email",to:u.email,toName:u.name,subject:(notifications[u.id]||newNotifs[u.id]).subject,sentAt:new Date().toLocaleString()})),
+      ...p
+    ]);
+    setBulkEmailSent(true);
+    const skipped=targets.length-withEmail.length;
+    showToast("⬇ "+withEmail.length+" .eml drafts downloading"+(skipped>0?" ("+skipped+" skipped — no email)":"")+" — open in Outlook");
+  };
   const handleSendTeams=u=>{const n=notifications[u.id]||genNotifForUser(u,monthLabel,periodLabel);setEmailLog(p=>[{id:Date.now(),type:"teams",to:u.name,toName:u.name,subject:"Teams: "+n.subject,sentAt:new Date().toLocaleString()},...p]);setNotifications(p=>({...p,[u.id]:n}));showToast("💬 Teams sent to "+u.name);};
   const handleFixEntry=(uid,newSch,note)=>{setUsers(prev=>prev.map(u=>u.id!==uid?u:{...u,scheduled:newSch}));showToast(`✓ Updated to ${newSch}h`);};
   const handleBulkNotif=()=>{const targets=users.filter(u=>selected.includes(u.id)&&getStatus(u)!=="green");if(!targets.length){showToast("All selected are complete","error");return;}const results=genBulkNotifs(targets,monthLabel,periodLabel,(d,t,n)=>setBulkProgress(`${d}/${t}`));setNotifications(p=>({...p,...results}));showToast(`✓ ${Object.keys(results).length} notifications ready`);setBulkProgress("");};
@@ -3773,7 +4487,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
               </div>
               {/* Desktop nav - centered */}
               <div className="mgr-nav-links" style={{display:"flex",alignItems:"center",gap:4,flexShrink:0}}>
-                {[["dashboard","Dashboard"],["records","Records"],["calendar","📅 Calendar"],["users","👥 Users"],["profile","Profile"]].map(function(item){
+                {[["dashboard","Dashboard"],["records","Records"],["billrate","💰 Bill Rate"],["calendar","📅 Calendar"],["users","👥 Users"],["profile","Profile"]].map(function(item){
                   return <button key={item[0]} style={navBtn(activeTab===item[0])} onClick={function(){setActiveTab(item[0]);}}>{item[1]}</button>;
                 })}
                 <button style={{padding:"7px 16px",background:IBM.blue60,color:"#fff",border:"none",cursor:"pointer",fontSize:13,fontWeight:600,marginLeft:8}} onClick={function(){setShowImport(true);}}>↑ Import</button>
@@ -3793,7 +4507,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
             {/* Mobile dropdown menu */}
             {mobileMenuOpen&&(
               <div className="mgr-nav-mobile" style={{display:"none"}}>
-                {[["dashboard","📊 Dashboard"],["records","📋 Records"],["calendar","📅 Calendar"],["users","👥 Users"],["profile","👤 Profile"]].map(function(item){
+                {[["dashboard","📊 Dashboard"],["records","📋 Records"],["billrate","💰 Bill Rate"],["calendar","📅 Calendar"],["users","👥 Users"],["profile","👤 Profile"]].map(function(item){
                   return (
                     <button key={item[0]} className="nav-item"
                       style={{padding:"14px 24px",color:activeTab===item[0]?"#0f62fe":"#f4f4f4",fontSize:15,textAlign:"left",background:"none",border:"none",borderBottom:"1px solid #262626",cursor:"pointer",fontFamily:FF_SANS,fontWeight:activeTab===item[0]?600:400,width:"100%"}}
@@ -3918,45 +4632,73 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
       {/* DASHBOARD */}
       {activeTab==="dashboard"&&(
         <React.Fragment>
-          <div className="dash-variance-bar" style={{margin:"0 28px 1px",background:IBM.gray100,padding:"14px 20px",display:"flex",alignItems:"center",gap:20,flexWrap:"wrap"}}>
+          <div className="dash-variance-bar" style={{margin:"0 28px 1px",background:IBM.gray100,padding:"14px 20px",display:"flex",alignItems:"center",gap:0,flexWrap:"wrap"}}>
             {(function(){
-              var totalSched=users.reduce(function(s,u){return s+(Number(u.scheduled)||0);},0);
               var _amk = selMonth + "-" + selYear;
-              var totalActual = showAllMonths
-                ? users.reduce(function(s,u){return s+(Number(u.entered)||0);},0)
-                : users.reduce(function(s,u){
-                    var mh = u.monthlyHours || {};
-                    return s + (mh[_amk] || Number(u.entered) || 0);
-                  },0);
-              var totalVar=totalSched-totalActual;
-              var varPct=totalSched>0?Math.min(Math.round((totalActual/totalSched)*100),100):0;
-              var varColor=totalVar===0?IBM.green50:totalVar>0?IBM.red60:IBM.orange40;
-              var varLabel=totalVar===0?"On Track":totalVar>0?"Under-reported":"Over-reported";
-              var varDisplay=totalVar===0?"0h":(totalVar>0?"-":"+")+(Math.abs(totalVar))+"h";
-              return [
-                <div key="v" style={{display:"flex",alignItems:"baseline",gap:8}}>
-                  <span style={{fontSize:38,fontWeight:300,color:varColor}}>{varDisplay}</span>
-                  <span style={{fontSize:13,color:"#a6c8ff"}}>total variance</span>
-                </div>,
-                <div key="d1" style={{width:1,height:36,background:IBM.gray80}}/>,
-                <div key="s">
-                  <div style={{fontSize:10,color:IBM.gray30,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:3}}>Status</div>
-                  <span style={{fontSize:13,fontWeight:700,color:varColor}}>{varLabel}</span>
-                </div>,
-                <div key="d2" style={{width:1,height:36,background:IBM.gray80}}/>,
-                <div key="h">
-                  <div style={{fontSize:10,color:IBM.gray30,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:3}}>Scheduled vs Actual</div>
-                  <div style={{fontSize:13,color:"#fff"}}>{totalSched}h scheduled &nbsp;&#8226;&nbsp; {totalActual}h actual</div>
-                </div>,
-                <div key="bar" style={{flex:1,minWidth:160}}>
-                  <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:IBM.gray50,marginBottom:4}}>
-                    <span>Actual vs Scheduled</span><span>{varPct}%</span>
+              // Only matched (Both) records for variance — IBM-only/Clarity-only are separate buckets
+              var matchedUsers = users.filter(function(u){ return u.dataSource === "Both"; });
+              var ibmOnlyUsers = users.filter(function(u){ return u.dataSource === "IBM only"; });
+              var clarityOnlyUsers = users.filter(function(u){ return u.dataSource === "Clarity only"; });
+              var mismatchUsers = matchedUsers.filter(function(u){ return getStatus(u) === "yellow"; });
+
+              var matchedSched  = matchedUsers.reduce(function(s,u){ return s+(Number(u.scheduled)||0); }, 0);
+              var matchedActual = showAllMonths
+                ? matchedUsers.reduce(function(s,u){ return s+(Number(u.entered)||0); }, 0)
+                : matchedUsers.reduce(function(s,u){ var mh=u.monthlyHours||{}; return s+(mh[_amk]||Number(u.entered)||0); }, 0);
+              var matchedVar = matchedSched - matchedActual;
+              var varPct = matchedSched > 0 ? Math.min(Math.round((matchedActual/matchedSched)*100),100) : 0;
+              var varColor = matchedVar === 0 ? IBM.green50 : matchedVar > 0 ? IBM.red60 : IBM.orange40;
+              var varLabel = matchedVar === 0 ? "On Track" : matchedVar > 0 ? "Under-reported" : "Over-reported";
+              var varDisplay = matchedVar === 0 ? "0h" : (matchedVar > 0 ? "-" : "+") + Math.abs(matchedVar) + "h";
+
+              function jumpToRecords(status, source) {
+                setActiveTab("records");
+                if (status) setFilterStatus(status);
+                if (source) setFilterSource(source);
+              }
+
+              return (
+                <React.Fragment>
+                  {/* Bucket 1: Mismatch variance (matched records only) */}
+                  <div style={{flex:"1 1 260px",paddingRight:20,borderRight:"1px solid "+IBM.gray80}}>
+                    <div style={{fontSize:10,color:IBM.gray30,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:4}}>
+                      Matched Records Variance
+                      <span style={{marginLeft:8,fontWeight:400,fontSize:10,color:IBM.gray50}}>({matchedUsers.length} matched · {mismatchUsers.length} with gap)</span>
+                    </div>
+                    <div style={{display:"flex",alignItems:"baseline",gap:10,flexWrap:"wrap"}}>
+                      <button onClick={function(){ jumpToRecords("yellow","Both"); }}
+                        style={{background:"none",border:"none",padding:0,cursor:"pointer",display:"flex",alignItems:"baseline",gap:8}}>
+                        <span style={{fontSize:36,fontWeight:300,color:varColor,lineHeight:1}}>{varDisplay}</span>
+                        <span style={{fontSize:12,color:varColor,fontWeight:600}}>{varLabel}</span>
+                      </button>
+                    </div>
+                    <div style={{marginTop:6,display:"flex",alignItems:"center",gap:8}}>
+                      <div style={{flex:1,height:5,background:IBM.gray80,overflow:"hidden"}}>
+                        <div style={{height:"100%",width:varPct+"%",background:matchedActual>=matchedSched?IBM.green50:IBM.orange40,transition:"width 0.3s"}}/>
+                      </div>
+                      <span style={{fontSize:11,color:IBM.gray30,whiteSpace:"nowrap"}}>{matchedSched}h sched · {matchedActual}h actual · {varPct}%</span>
+                    </div>
                   </div>
-                  <div style={{height:6,background:IBM.gray80,overflow:"hidden"}}>
-                    <div style={{height:"100%",width:varPct+"%",background:totalActual>=totalSched?IBM.green50:IBM.orange40}}/>
+
+                  {/* Bucket 2: IBM only (scheduled, no Clarity) */}
+                  <div style={{flex:"0 0 auto",padding:"0 24px",borderRight:"1px solid "+IBM.gray80,cursor:"pointer"}}
+                    onClick={function(){ jumpToRecords("all","IBM only"); }}>
+                    <div style={{fontSize:10,color:IBM.gray30,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:4}}>IBM Only</div>
+                    <div style={{fontSize:36,fontWeight:300,color:IBM.orange40,lineHeight:1}}>{ibmOnlyUsers.length}</div>
+                    <div style={{fontSize:11,color:IBM.gray50,marginTop:4}}>in IBM · no Clarity</div>
+                    <div style={{fontSize:10,color:IBM.blue60,marginTop:3,fontWeight:600}}>Click to filter ↗</div>
                   </div>
-                </div>
-              ];
+
+                  {/* Bucket 3: Clarity only (actual hours, no IBM schedule) */}
+                  <div style={{flex:"0 0 auto",padding:"0 24px",cursor:"pointer"}}
+                    onClick={function(){ jumpToRecords("all","Clarity only"); }}>
+                    <div style={{fontSize:10,color:IBM.gray30,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:4}}>Clarity Only</div>
+                    <div style={{fontSize:36,fontWeight:300,color:IBM.purple60,lineHeight:1}}>{clarityOnlyUsers.length}</div>
+                    <div style={{fontSize:11,color:IBM.gray50,marginTop:4}}>in Clarity · no IBM</div>
+                    <div style={{fontSize:10,color:IBM.blue60,marginTop:3,fontWeight:600}}>Click to filter ↗</div>
+                  </div>
+                </React.Fragment>
+              );
             })()}
           </div>
           <div className="dash-stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:1,background:IBM.gray20,margin:"0 28px",border:"1px solid "+IBM.gray20}}>
@@ -3971,17 +4713,20 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
                 : users.reduce(function(s,u){return s+((u.monthlyHours||{})[_amk2] || Number(u.entered) || 0);},0);
               var monthLabel2 = showAllMonths ? "All Months" : selMonth;
               var cards=[
-                {l:"Total People",v:total,c:IBM.blue60},
-                {l:"Matched",v:matchedCount,c:IBM.green50},
+                {l:"Total People",v:total,c:IBM.blue60,onClick:function(){setActiveTab("records");setFilterStatus("all");setFilterSource("all");}},
+                {l:"Matched",v:matchedCount,c:IBM.green50,onClick:function(){setActiveTab("records");setFilterStatus("all");setFilterSource("Both");}},
                 {l:"IBM Scheduled",v:users.reduce(function(s,u){return s+(Number(u.scheduled)||0);},0)+"h",c:IBM.blue60},
                 {l:monthLabel2+" Actual",v:monthActual+"h",c:monthActual>0?IBM.purple60:IBM.gray50},
-                {l:"IBM Only",v:ibmOnlyCount,c:IBM.orange40},
-                {l:"Clarity Only",v:clarityOnlyCount,c:IBM.purple60}
+                {l:"IBM Only",v:ibmOnlyCount,c:IBM.orange40,onClick:function(){setActiveTab("records");setFilterStatus("all");setFilterSource("IBM only");}},
+                {l:"Clarity Only",v:clarityOnlyCount,c:IBM.purple60,onClick:function(){setActiveTab("records");setFilterStatus("all");setFilterSource("Clarity only");}}
               ];
               return cards.map(function(card){
-                return <div key={card.l} style={{background:"#fff",padding:"16px 20px",borderTop:"3px solid "+card.c}}>
+                return <div key={card.l}
+                  onClick={card.onClick||undefined}
+                  style={{background:"#fff",padding:"16px 20px",borderTop:"3px solid "+card.c,cursor:card.onClick?"pointer":"default"}}>
                   <div style={{fontSize:28,fontWeight:300,color:card.c,letterSpacing:"-0.5px"}}>{card.v}</div>
                   <div style={{fontSize:11,color:IBM.gray60,marginTop:5,textTransform:"uppercase",letterSpacing:"0.09em",fontWeight:500}}>{card.l}</div>
+                  {card.onClick&&<div style={{fontSize:10,color:IBM.blue60,marginTop:3,fontWeight:600}}>Click to filter ↗</div>}
                 </div>;
               });
             })()}
@@ -4049,21 +4794,21 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
       {/* RECORDS */}
       {activeTab==="records"&&(
         <div>
-          <BulkBar selected={selected} total={filtered.length} onSelectAll={()=>setSelected(filtered.map(u=>u.id))} onClearAll={()=>setSelected([])} onBulkNotif={handleBulkNotif} onSendAll={handleBulkSendAll} onBulkTeams={()=>{users.filter(u=>selected.includes(u.id)).forEach(u=>handleSendTeams(u));setBulkTeamsSent(true);}} onBulkEmail={()=>{users.filter(u=>selected.includes(u.id)).forEach(u=>handleSendEmail(u));setBulkEmailSent(true);}} bulkLoading={bulkLoading} bulkProgress={bulkProgress} notifications={notifications} bulkTeamsSent={bulkTeamsSent} bulkEmailSent={bulkEmailSent}/>
+          <BulkBar selected={selected} total={filtered.length} onSelectAll={()=>setSelected(filtered.map(u=>u.id))} onClearAll={()=>setSelected([])} onBulkNotif={handleBulkNotif} onSendAll={handleBulkSendAll} onBulkTeams={()=>{users.filter(u=>selected.includes(u.id)).forEach(u=>handleSendTeams(u));setBulkTeamsSent(true);}} onBulkEmail={handleBulkOpenMailto} onBulkEmlDownload={handleBulkDownloadEml} bulkLoading={bulkLoading} bulkProgress={bulkProgress} notifications={notifications} bulkTeamsSent={bulkTeamsSent} bulkEmailSent={bulkEmailSent}/>
           {/* Filter bar */}
           <div style={{padding:"12px 28px 0",background:"#fff",borderBottom:"1px solid "+IBM.gray20}}>
             {/* Row 1: Status chips + search + sort + actions */}
             <div className="filter-row1" style={{display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:8,marginBottom:8,alignItems:"center"}}>
               <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
-                {[["all","All",IBM.gray80],["green","Complete",IBM.green50],["yellow","Mismatch",IBM.yellow30],["red","Missing",IBM.red60],["purple","No IBM Sched",IBM.purple60]].map(function(item){
+                {[["all","All",IBM.gray80],["green","Complete",IBM.green50],["yellow","Mismatch",IBM.yellow30]].map(function(item){
                   var v=item[0],l=item[1],c=item[2];
                   return <button key={v} onClick={function(){setFilterStatus(v);}} style={{padding:"4px 10px",border:"1px solid "+(filterStatus===v?c:IBM.gray20),background:filterStatus===v?c:"#fff",color:filterStatus===v?(c===IBM.yellow30?IBM.gray100:"#fff"):IBM.gray70,cursor:"pointer",fontSize:11,fontWeight:600}}>{l}</button>;
                 })}
                 <span style={{width:1,height:16,background:IBM.gray20,flexShrink:0}}/>
                 {/* Source filter */}
-                {[["all","All Sources"],["Both","Matched"],["IBM only","IBM Only"],["Clarity only","Clarity Only"]].map(function(item){
+                {[["all","All Sources"],["IBM only","IBM Only"],["Clarity only","Clarity Only"]].map(function(item){
                   var v=item[0],l=item[1];
-                  var c=v==="Both"?IBM.green50:v==="IBM only"?IBM.blue60:v==="Clarity only"?IBM.purple60:IBM.gray70;
+                  var c=v==="IBM only"?IBM.blue60:v==="Clarity only"?IBM.purple60:IBM.gray70;
                   return <button key={v} onClick={function(){setFilterSource(v);}} style={{padding:"4px 10px",border:"1px solid "+(filterSource===v?c:IBM.gray20),background:filterSource===v?c:"#fff",color:filterSource===v?"#fff":IBM.gray70,cursor:"pointer",fontSize:11,fontWeight:600}}>{l}</button>;
                 })}
                 <span style={{width:1,height:16,background:IBM.gray20,flexShrink:0}}/>
@@ -4144,7 +4889,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
               <thead><tr>{["","","Name","Source","WBS / Talent ID","Dept / Country","Resource Mgr","Workitems","Scheduled","Actual Hrs","Variance","Status","Billing Code","Actions"].map(function(h){ return <th key={h} className={(h==="Billing Code"||h==="Workitems")?"col-hide-mobile":""} style={TH}>{h}</th>; })}</tr></thead>
               <tbody>
                 {filtered.map((u,idx)=>{
-                  const alt=idx%2,st=getStatus(u),diff=Number(u.scheduled)-Number(u.entered);
+                  const alt=idx%2,st=getStatus(u),diff=Number(u.scheduled)-Number(u.entered),absDiff=Math.abs(diff);
                   const mk2=monthKey(selMonth,selYear);
                   const hasNotes=(u.monthlyEntries && u.monthlyEntries[mk2] && u.monthlyEntries[mk2].periodNotes && u.monthlyEntries[mk2].periodNotes.P1)||(u.monthlyEntries && u.monthlyEntries[mk2] && u.monthlyEntries[mk2].periodNotes && u.monthlyEntries[mk2].periodNotes.P2);
                   // Show live entered hours for current month if available
@@ -4234,7 +4979,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
                         </span>
                       </td>
                       <td style={TD(alt)}>
-                        {u.wbsId&&<div style={{fontSize:11,color:IBM.gray70,marginBottom:2}}><b>WBS:</b> {u.wbsId}</div>}
+                        {u.wbsId&&<div style={{marginBottom:3}}>{u.wbsId.split(", ").map(function(w,wi){return(<span key={wi} style={{display:"inline-block",fontSize:11,fontWeight:700,background:IBM.blue10,color:IBM.blue60,border:"1px solid "+IBM.blue20,borderRadius:3,padding:"1px 6px",marginRight:3,marginBottom:2}}>{w}</span>);})}</div>}
                         {u.talentId&&<div style={{fontSize:11,color:IBM.gray60}}><b>TID:</b> {u.talentId}</div>}
                         {!u.wbsId&&!u.talentId&&<span style={{color:IBM.gray30,fontSize:12}}>—</span>}
                       </td>
@@ -4256,7 +5001,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
                           :u.entered===0?<span style={{color:IBM.red60,fontWeight:700}}>—</span>:u.entered+"h"
                         }
                       </td>
-                      <td style={Object.assign({},TD(alt),{textAlign:"right",color:diff===0?IBM.green50:diff>20?IBM.red60:IBM.orange40,fontWeight:diff>0?700:400})}>{diff===0?"✓":"-"+diff+"h"}</td>
+                      <td style={Object.assign({},TD(alt),{textAlign:"right",color:diff===0?IBM.green50:absDiff>20?IBM.red60:IBM.orange40,fontWeight:diff!==0?700:400})}>{diff===0?"✓":(diff>0?"-":"+")+(absDiff)+"h"}</td>
                       <td style={TD(alt)}>
                         {u.timesheetStatus
                           ?<span style={{fontSize:10,padding:"2px 6px",fontWeight:600,
@@ -4288,57 +5033,11 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
 
       {activeTab==="users"&&<UserManagementTab session={session} showToast={showToast}/>}
       {activeTab==="calendar"&&<CalendarEventsTab calendarEvents={calendarEvents} setCalendarEvents={setCalendarEvents} showToast={showToast}/>}
+      {activeTab==="billrate"&&<BillRateTab users={users} billRateDB={billRateDB} setBillRateDB={setBillRateDB} showToast={showToast}/>}
 
       {activeTab==="profile"&&(
         <div style={{padding:"28px",maxWidth:800}}>
-          {/* Change own password */}
-          {(function(){
-            var[ownPw,setOwnPw]=React.useState("");
-            var[ownPw2,setOwnPw2]=React.useState("");
-            var[ownPwErr,setOwnPwErr]=React.useState("");
-            var[ownPwOk,setOwnPwOk]=React.useState(false);
-            var[ownPwSaving,setOwnPwSaving]=React.useState(false);
-            async function handleOwnPw(){
-              setOwnPwErr("");
-              if(!ownPw){setOwnPwErr("Enter a new password.");return;}
-              if(ownPw.length<8){setOwnPwErr("Password must be at least 8 characters.");return;}
-              if(ownPw!==ownPw2){setOwnPwErr("Passwords do not match.");return;}
-              setOwnPwSaving(true);
-              try {
-                var users=await getAllUsers();
-                var me=users.find(function(u){return u.username===session.username;});
-                if(!me){setOwnPwErr("User not found.");setOwnPwSaving(false);return;}
-                var hashed=await hashPassword(session.username,ownPw);
-                await updateUser(me.id,{password_hash:hashed});
-                setOwnPwOk(true);setOwnPw("");setOwnPw2("");
-                setTimeout(function(){setOwnPwOk(false);},3000);
-              } catch(ex){ setOwnPwErr(ex.message||"Failed"); }
-              setOwnPwSaving(false);
-            }
-            return (
-              <div style={{background:"#fff",border:"1px solid "+IBM.gray20,marginBottom:20}}>
-                <div style={{background:IBM.orange40,color:"#fff",padding:"12px 20px",fontSize:13,fontWeight:600}}>&#128274; Change Your Password</div>
-                <div style={{padding:"18px 20px",display:"flex",gap:14,flexWrap:"wrap",alignItems:"flex-end"}}>
-                  <div>
-                    <label style={{fontSize:11,fontWeight:600,textTransform:"uppercase",color:IBM.gray70,display:"block",marginBottom:5,letterSpacing:"0.07em"}}>New Password</label>
-                    <input type="password" value={ownPw} onChange={function(e){setOwnPw(e.target.value);setOwnPwErr("");}} placeholder="Min 8 characters"
-                      style={{padding:"8px 12px",border:"1px solid "+IBM.gray30,fontSize:13,outline:"none",width:200}}/>
-                  </div>
-                  <div>
-                    <label style={{fontSize:11,fontWeight:600,textTransform:"uppercase",color:IBM.gray70,display:"block",marginBottom:5,letterSpacing:"0.07em"}}>Confirm</label>
-                    <input type="password" value={ownPw2} onChange={function(e){setOwnPw2(e.target.value);setOwnPwErr("");}} placeholder="Re-enter"
-                      style={{padding:"8px 12px",border:"1px solid "+IBM.gray30,fontSize:13,outline:"none",width:200}}/>
-                  </div>
-                  <button onClick={handleOwnPw} disabled={ownPwSaving}
-                    style={{padding:"9px 18px",background:ownPwSaving?IBM.gray30:IBM.orange40,color:"#fff",border:"none",cursor:"pointer",fontSize:13,fontWeight:600,flexShrink:0}}>
-                    {ownPwSaving?"Saving…":"Update Password"}
-                  </button>
-                </div>
-                {ownPwErr&&<div style={{margin:"0 20px 14px",padding:"8px 12px",background:"#fff1f1",border:"1px solid #ffb3b8",color:IBM.red60,fontSize:12}}>&#9888; {ownPwErr}</div>}
-                {ownPwOk&&<div style={{margin:"0 20px 14px",padding:"8px 12px",background:IBM.green10,border:"1px solid "+IBM.green20,color:IBM.green50,fontSize:12,fontWeight:600}}>&#10003; Password updated successfully!</div>}
-              </div>
-            );
-          })()}
+          <ChangePasswordPanel session={session}/>
           <div style={{background:"#fff",border:`1px solid ${IBM.gray20}`,marginBottom:20}}>
             <div style={{background:IBM.gray100,color:"#fff",padding:"14px 20px",display:"flex",alignItems:"center",gap:12}}>
               <div style={{width:36,height:36,borderRadius:"50%",background:"#5b5ea6",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:700,color:"#fff"}}>{mgrName?mgrName.split(" ").map(n=>n[0]).join("").slice(0,2):"M"}</div>
