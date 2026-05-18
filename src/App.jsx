@@ -3820,7 +3820,7 @@ function UserManagementTab({session, showToast}) {
 // Parses a Labor Claim Details XLSX (same 67-col schema as IBM timesheet files)
 // and builds an editable reference table of BillingCode → BillingRate mappings.
 // When IBM records are loaded the validation panel cross-checks every person.
-function parseBillRateFile(file, XLSX){
+function parseBillRateFile(file){
   return new Promise(function(resolve, reject){
     var reader = new FileReader();
     reader.onload = function(e){
@@ -3886,7 +3886,7 @@ function validateUserBillRate(u, db){
 }
 
 function BillRateTab({users, billRateDB, setBillRateDB, showToast}){
-  var XLSX = window.XLSX;
+  // XLSX is available via top-level ES module import
   var [loadedFiles, setLoadedFiles]     = useState([]);
   var [editingId,   setEditingId]       = useState(null);
   var [editDraft,   setEditDraft]       = useState({});
@@ -3927,10 +3927,9 @@ function BillRateTab({users, billRateDB, setBillRateDB, showToast}){
   },[valResults, valTab]);
 
   function handleFileDrop(files){
-    if(!XLSX){ showToast("XLSX library not loaded","error"); return; }
     var arr = Array.from(files).filter(function(f){ return f.name.endsWith(".xlsx")||f.name.endsWith(".xls"); });
     if(!arr.length){ showToast("Please upload .xlsx files","error"); return; }
-    var promises = arr.map(function(f){ return parseBillRateFile(f, XLSX); });
+    var promises = arr.map(function(f){ return parseBillRateFile(f); });
     Promise.all(promises).then(function(results){
       var all = [].concat.apply([], results);
       var added = 0;
@@ -3948,7 +3947,6 @@ function BillRateTab({users, billRateDB, setBillRateDB, showToast}){
   }
 
   function handleExport(){
-    if(!XLSX){ showToast("XLSX library not loaded","error"); return; }
     var wsData = [["WBS ID","Billing Code","Billing Rate","Hire Type","Resource Type","Country","Source"]];
     billRateDB.forEach(function(r){
       wsData.push([r.wbsId,r.billingCode,r.billingRate,r.hireType,r.resourceType,r.country,r.source||""]);
