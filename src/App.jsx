@@ -1,5 +1,7 @@
-import React, { useState, useRef, useMemo } from "react";
+import React, { useState, useRef, useMemo, useEffect } from "react";
 import * as XLSX from "xlsx";
+import * as pdfjsLib from "pdfjs-dist";
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from "recharts";
 
 const CSS_LOGIN = "@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;600&family=IBM+Plex+Mono:wght@400;600&display=swap');*{box-sizing:border-box;margin:0;padding:0}";
@@ -3816,6 +3818,304 @@ function UserManagementTab({session, showToast}) {
 }
 
 
+// ─── INVOICE PARSING & VALIDATION ────────────────────────────────────────────
+// Parse IBM invoice PDFs (text-based). Pattern:
+//   Header: "Project Number  RATT8 - ..." → wbsId
+//   Name lines: ALL-CAPS (optionally preceded by "..")
+//   Week rows: "Week Ending YYYY-MM-DD  HH.H HRS  RATE  AMOUNT"
+async function parseInvoicePDF(file){
+  var ab = await file.arrayBuffer();
+  var pdf = await pdfjsLib.getDocument({data: ab}).promise;
+  var fullText = "";
+  for(var i=1; i<=pdf.numPages; i++){
+    var page = await pdf.getPage(i);
+    var tc = await page.getTextContent();
+    var pageText = tc.items.map(function(t){ return t.str; }).join(" ");
+    fullText += " " + pageText;
+  }
+
+  // Extract invoice metadata
+  var invoiceNo   = (fullText.match(/Invoice No\.?:?\s*(B\d+)/i)||[])[1] || "";
+  var invoiceDate = (fullText.match(/Invoice Date:?\s*([\w]+ \d+ \d{4})/i)||[])[1] || "";
+  var wbsRaw      = (fullText.match(/Project Number\s+([A-Z0-9]+)\s*[-–]/i)||[])[1] || "";
+  var projectName = (fullText.match(/Project Number\s+[A-Z0-9]+\s*[-–]\s*([^\n]+?)(?:Install|CIO|Application|$)/i)||[])[1]||"";
+
+  // Parse line by line for names and week entries
+  // Normalise: collapse multiple spaces → single space, split on common line breaks
+  var lines = fullText
+    .replace(/Week Ending/g, "\nWeek Ending")
+    .split(/\n/)
+    .map(function(l){ return l.replace(/\s+/g," ").trim(); })
+    .filter(Boolean);
+
+  var nameRe    = /^[\.]{0,2}\s*([A-Z][A-Z ,\.'\-]{3,}[A-Z])$/;
+  var weekRe    = /^Week Ending\s+(\d{4}-\d{2}-\d{2})\s+([\d.]+)\s+HRS\s+([\d.]+)\s+([\d,]+\.\d{2})/;
+  var records   = []; // {name, weekEnding, hours, rate, amount}
+  var curName   = "";
+
+  lines.forEach(function(line){
+    var nm = line.match(nameRe);
+    // Filter out known non-name all-caps lines
+    if(nm && !/^(INVOICE|BANK OF|ATTN|IBM|TORONTO|SCARBOROUGH|ACCOUNTING|INSTALL|SUMMARY|TOTAL|HARMONIZED|PAGE|PAYABLE|OVERDUE|ACCESS|PLEASE|DESCRIPTION|QUANTITY|CHARGE|BILL AMOUNT|GLOBAL BUSINESS)/i.test(nm[1])){
+      curName = nm[1].replace(/^\.*\s*/,"").trim();
+    }
+    var wm = line.match(weekRe);
+    if(wm && curName){
+      records.push({
+        name:       curName,
+        weekEnding: wm[1],           // YYYY-MM-DD
+        hours:      parseFloat(wm[2]),
+        rate:       parseFloat(wm[3]),
+        amount:     parseFloat(wm[4].replace(/,/g,"")),
+      });
+    }
+  });
+
+  // Aggregate per person: totalHours, rate (most common), weeks covered
+  var byPerson = {};
+  records.forEach(function(r){
+    if(!byPerson[r.name]) byPerson[r.name] = {name:r.name, totalHours:0, rate:r.rate, weeks:[], wbsId:wbsRaw, invoiceNo:invoiceNo, invoiceDate:invoiceDate};
+    byPerson[r.name].totalHours += r.hours;
+    byPerson[r.name].weeks.push(r.weekEnding);
+  });
+
+  return {
+    invoiceNo, invoiceDate, wbsId: wbsRaw, projectName: projectName.trim(),
+    fileName: file.name,
+    people: Object.values(byPerson),
+    rawRecords: records,
+  };
+}
+
+// Normalise a name for fuzzy matching: remove initials prefix, sort tokens
+function normInvName(s){
+  return String(s||"").toLowerCase()
+    .replace(/[^a-z\s]/g,"").trim()
+    .split(/\s+/).sort().join(" ");
+}
+
+function InvoiceTab({users, billRateDB, showToast}){
+  var [invoices,    setInvoices]    = useState([]);  // parsed invoice objects
+  var [loading,     setLoading]     = useState(false);
+  var [dragOver,    setDragOver]    = useState(false);
+  var [selInvoice,  setSelInvoice]  = useState(null); // invoiceNo filter
+  var [filterName,  setFilterName]  = useState("");
+  var [valFilter,   setValFilter]   = useState("all"); // all|match|mismatch|missing
+
+  // Flatten all invoice people across loaded invoices (optionally filtered by selected invoice)
+  var allPeople = useMemo(function(){
+    var src = selInvoice ? invoices.filter(function(inv){ return inv.invoiceNo===selInvoice; }) : invoices;
+    return src.reduce(function(acc, inv){
+      inv.people.forEach(function(p){ acc.push(Object.assign({},p,{invoiceNo:inv.invoiceNo,invoiceDate:inv.invoiceDate,wbsId:p.wbsId||inv.wbsId,projectName:inv.projectName,fileName:inv.fileName})); });
+      return acc;
+    },[]);
+  },[invoices, selInvoice]);
+
+  // Validate each invoice person against Clarity (users state)
+  var validated = useMemo(function(){
+    var q = filterName.toLowerCase();
+    return allPeople
+      .filter(function(p){ return !q || p.name.toLowerCase().includes(q); })
+      .map(function(p){
+        // Find best matching user by name fuzzy
+        var pNorm = normInvName(p.name);
+        var match = users.find(function(u){
+          return normInvName(u.name)===pNorm || normInvName(u.clarityName||"")===pNorm;
+        });
+        if(!match){
+          // Looser: any token overlap
+          match = users.find(function(u){
+            var uToks = normInvName(u.name).split(" ");
+            var pToks = pNorm.split(" ");
+            var overlap = pToks.filter(function(t){ return t.length>2&&uToks.includes(t); });
+            return overlap.length >= Math.max(1, Math.floor(pToks.length*0.6));
+          });
+        }
+        var clarityHrs  = match ? (Number(match.entered)||0) : null;
+        var ibmSched    = match ? (Number(match.scheduled)||0) : null;
+        var hoursDiff   = clarityHrs!=null ? (p.totalHours - clarityHrs) : null;
+        // Rate check against billRateDB
+        var refRates    = billRateDB.filter(function(r){ return r.wbsId===p.wbsId; });
+        var rateMatch   = refRates.find(function(r){ return Math.abs(Number(r.billingRate)-p.rate)<0.01; });
+        var rateStatus  = refRates.length===0?"no_ref":rateMatch?"match":"mismatch";
+        var hoursStatus = clarityHrs==null?"no_clarity": Math.abs(hoursDiff)<0.1?"match": hoursDiff>0?"invoice_over":"invoice_under";
+        var overallStatus = (hoursStatus==="match"&&(rateStatus==="match"||rateStatus==="no_ref"))?"match":hoursStatus==="no_clarity"?"missing":"mismatch";
+        return Object.assign({},p,{clarityHrs,ibmSched,hoursDiff,rateStatus,hoursStatus,overallStatus,matchedUser:match,refRates});
+      });
+  },[allPeople, users, billRateDB, filterName]);
+
+  var counts = useMemo(function(){
+    var c={match:0,mismatch:0,missing:0};
+    validated.forEach(function(v){ c[v.overallStatus]=(c[v.overallStatus]||0)+1; });
+    return c;
+  },[validated]);
+
+  var displayed = useMemo(function(){
+    if(valFilter==="all") return validated;
+    return validated.filter(function(v){ return v.overallStatus===valFilter; });
+  },[validated,valFilter]);
+
+  async function handleFiles(files){
+    var pdfs = Array.from(files).filter(function(f){ return f.name.toLowerCase().endsWith(".pdf"); });
+    if(!pdfs.length){ showToast("Please upload PDF invoice files","error"); return; }
+    setLoading(true);
+    try{
+      var results = await Promise.all(pdfs.map(parseInvoicePDF));
+      setInvoices(function(prev){
+        var next = prev.slice();
+        results.forEach(function(inv){
+          var dup = next.findIndex(function(e){ return e.invoiceNo===inv.invoiceNo; });
+          if(dup>=0) next[dup]=inv; else next.push(inv);
+        });
+        return next;
+      });
+      var total = results.reduce(function(s,r){ return s+r.people.length; },0);
+      showToast("✓ Loaded "+pdfs.length+" invoice(s) — "+total+" people parsed");
+    } catch(err){
+      showToast("Error parsing PDF: "+err.message,"error");
+    }
+    setLoading(false);
+  }
+
+  var TH2={background:IBM.gray10,padding:"7px 10px",fontSize:11,fontWeight:600,textAlign:"left",borderBottom:"2px solid "+IBM.gray20,whiteSpace:"nowrap"};
+  var TD2=function(alt){return{padding:"6px 10px",borderBottom:"1px solid "+IBM.gray10,fontSize:12,background:alt?IBM.gray10:"#fff",verticalAlign:"middle"};};
+
+  function statusBadge(v){
+    if(v.overallStatus==="match")    return <span style={{background:IBM.green10,color:IBM.green50,border:"1px solid "+IBM.green20,padding:"2px 8px",fontWeight:700,fontSize:11}}>✅ Match</span>;
+    if(v.overallStatus==="missing")  return <span style={{background:IBM.yellow10,color:"#8e6a00",border:"1px solid "+IBM.yellow30,padding:"2px 8px",fontWeight:700,fontSize:11}}>⚠ Not in Clarity</span>;
+    return <span style={{background:IBM.red10,color:IBM.red60,border:"1px solid #ffb3b8",padding:"2px 8px",fontWeight:700,fontSize:11}}>❌ Mismatch</span>;
+  }
+
+  // Invoice summary totals
+  var invTotals = useMemo(function(){
+    var hrs=0, amt=0;
+    allPeople.forEach(function(p){ hrs+=p.totalHours; });
+    invoices.filter(function(inv){ return !selInvoice||inv.invoiceNo===selInvoice; })
+      .forEach(function(inv){inv.rawRecords.forEach(function(r){amt+=r.amount;});});
+    return {hrs:hrs.toFixed(1), amt:amt.toLocaleString("en-CA",{style:"currency",currency:"CAD"})};
+  },[allPeople, invoices, selInvoice]);
+
+  return(
+    <div style={{padding:"24px 28px",fontFamily:FF_SANS}}>
+      {/* Header */}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:20,flexWrap:"wrap",gap:8}}>
+        <div>
+          <div style={{fontSize:20,fontWeight:700,color:IBM.gray100}}>📄 Invoice Validation</div>
+          <div style={{fontSize:13,color:IBM.gray60,marginTop:3}}>Upload IBM invoices (PDF) and validate hours + rates against Clarity records</div>
+        </div>
+        {invoices.length>0&&<button onClick={function(){setInvoices([]);setSelInvoice(null);showToast("Invoices cleared");}} style={{padding:"8px 14px",background:"none",border:"1px solid "+IBM.red40,color:IBM.red60,cursor:"pointer",fontSize:12}}>🗑 Clear All</button>}
+      </div>
+
+      {/* Drop zone */}
+      <div
+        onDragOver={function(e){e.preventDefault();setDragOver(true);}}
+        onDragLeave={function(){setDragOver(false);}}
+        onDrop={function(e){e.preventDefault();setDragOver(false);handleFiles(e.dataTransfer.files);}}
+        onClick={function(){document.getElementById("inv-file-input").click();}}
+        style={{border:"2px dashed "+(dragOver?IBM.blue60:IBM.gray30),borderRadius:4,padding:"20px 24px",marginBottom:20,background:dragOver?IBM.blue10:"#fafafa",textAlign:"center",cursor:"pointer",transition:"all 0.15s"}}>
+        {loading
+          ? <div style={{fontSize:14,color:IBM.blue60,fontWeight:600}}>⏳ Parsing invoice PDFs…</div>
+          : <><div style={{fontSize:14,color:dragOver?IBM.blue60:IBM.gray70,fontWeight:600}}>📄 Drop Invoice PDFs here or click to browse</div>
+             <div style={{fontSize:12,color:IBM.gray50,marginTop:4}}>Supports multiple files — RATT8, RAVDD, RAT8W, RAQFN, etc.</div></>}
+        <input id="inv-file-input" type="file" accept=".pdf" multiple style={{display:"none"}}
+          onChange={function(e){handleFiles(e.target.files);e.target.value="";}}/>
+      </div>
+
+      {/* Loaded invoice chips */}
+      {invoices.length>0&&(
+        <div style={{marginBottom:16,display:"flex",flexWrap:"wrap",gap:6,alignItems:"center"}}>
+          <button onClick={function(){setSelInvoice(null);}} style={{padding:"3px 10px",fontSize:11,fontWeight:600,background:!selInvoice?IBM.gray80:"none",color:!selInvoice?"#fff":IBM.gray60,border:"1px solid "+IBM.gray30,cursor:"pointer"}}>All</button>
+          {invoices.map(function(inv){return(
+            <button key={inv.invoiceNo} onClick={function(){setSelInvoice(inv.invoiceNo);}}
+              style={{padding:"3px 10px",fontSize:11,fontWeight:600,background:selInvoice===inv.invoiceNo?IBM.blue60:"none",color:selInvoice===inv.invoiceNo?"#fff":IBM.blue60,border:"1px solid "+(selInvoice===inv.invoiceNo?IBM.blue60:IBM.blue20),cursor:"pointer"}}>
+              {inv.wbsId} · {inv.invoiceNo} · {inv.people.length} people
+            </button>
+          );})}
+        </div>
+      )}
+
+      {/* Summary bar */}
+      {allPeople.length>0&&(
+        <div style={{display:"flex",gap:16,marginBottom:20,flexWrap:"wrap"}}>
+          {[
+            ["📋 Invoice Total",invTotals.hrs+" hrs","#0f3460","#e8f0ff"],
+            ["✅ Match",counts.match,IBM.green50,IBM.green10],
+            ["❌ Mismatch",counts.mismatch,IBM.red60,IBM.red10],
+            ["⚠ Not in Clarity",counts.missing,"#8e6a00",IBM.yellow10],
+          ].map(function(item,i){return(
+            <div key={i} style={{padding:"12px 18px",background:item[3],border:"1px solid "+item[2]+"33",borderRadius:4,minWidth:140}}>
+              <div style={{fontSize:11,color:item[2],fontWeight:600,textTransform:"uppercase",letterSpacing:"0.06em"}}>{item[0]}</div>
+              <div style={{fontSize:22,fontWeight:700,color:item[2],marginTop:2}}>{item[1]}</div>
+            </div>
+          );})}
+        </div>
+      )}
+
+      {/* Validation table */}
+      {allPeople.length>0&&(
+        <div style={{background:"#fff",border:"1px solid "+IBM.gray20,borderRadius:4}}>
+          <div style={{padding:"12px 16px",borderBottom:"1px solid "+IBM.gray20,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              {[["all","All"],["match","✅ Match"],["mismatch","❌ Mismatch"],["missing","⚠ Not in Clarity"]].map(function(item){
+                var cnt=item[0]==="all"?validated.length:counts[item[0]]||0;
+                return(<button key={item[0]} onClick={function(){setValFilter(item[0]);}}
+                  style={{padding:"4px 12px",border:"1px solid "+(valFilter===item[0]?IBM.blue60:IBM.gray20),background:valFilter===item[0]?IBM.blue10:"#fff",color:valFilter===item[0]?IBM.blue60:IBM.gray60,cursor:"pointer",fontSize:12,fontWeight:valFilter===item[0]?700:400}}>
+                  {item[1]} <b style={{marginLeft:4}}>{cnt}</b></button>);
+              })}
+            </div>
+            <input value={filterName} onChange={function(e){setFilterName(e.target.value);}} placeholder="Search name…"
+              style={{border:"1px solid "+IBM.gray30,padding:"5px 10px",fontSize:12,width:160}}/>
+          </div>
+          <div style={{overflowX:"auto"}}>
+            <table style={{width:"100%",borderCollapse:"collapse"}}>
+              <thead><tr>
+                {["Name","WBS","Invoice #","Invoice Hrs","Invoice Rate","Clarity Hrs","IBM Sched","Hrs Variance","Rate Status","Overall"].map(function(h){
+                  return <th key={h} style={TH2}>{h}</th>;
+                })}
+              </tr></thead>
+              <tbody>
+                {displayed.length===0&&<tr><td colSpan={10} style={{padding:"20px",textAlign:"center",color:IBM.gray50,fontSize:13}}>No records in this category.</td></tr>}
+                {displayed.map(function(v,idx){
+                  var alt=idx%2;
+                  var hDiff=v.hoursDiff;
+                  var hColor=hDiff==null?IBM.gray50:Math.abs(hDiff)<0.1?IBM.green50:hDiff>0?IBM.red60:IBM.orange40;
+                  var hLabel=hDiff==null?"—":hDiff>0.05?"+"+hDiff.toFixed(1)+"h (invoice over)":hDiff<-0.05?hDiff.toFixed(1)+"h (invoice under)":"✓ Exact";
+                  return(
+                    <tr key={idx}>
+                      <td style={TD2(alt)}><b>{v.name}</b>{v.matchedUser&&<div style={{fontSize:10,color:IBM.gray50}}>{v.matchedUser.name}</div>}</td>
+                      <td style={TD2(alt)}><span style={{background:IBM.blue10,color:IBM.blue70,padding:"2px 7px",fontSize:11,fontWeight:700,border:"1px solid "+IBM.blue20}}>{v.wbsId||"—"}</span></td>
+                      <td style={TD2(alt)}><span style={{fontSize:11,color:IBM.gray60}}>{v.invoiceNo}</span></td>
+                      <td style={TD2(alt)}><b>{v.totalHours.toFixed(1)}h</b></td>
+                      <td style={TD2(alt)}><span style={{fontWeight:600,color:v.rateStatus==="mismatch"?IBM.red60:IBM.gray100}}>${v.rate.toFixed(2)}</span>{v.rateStatus==="mismatch"&&<div style={{fontSize:10,color:IBM.red60}}>Ref: ${v.refRates[0]&&v.refRates[0].billingRate.toFixed(2)}</div>}</td>
+                      <td style={TD2(alt)}>{v.clarityHrs!=null?<b>{v.clarityHrs.toFixed(1)}h</b>:<span style={{color:IBM.gray30,fontSize:11}}>—</span>}</td>
+                      <td style={TD2(alt)}>{v.ibmSched!=null?<span style={{fontSize:11,color:IBM.gray60}}>{v.ibmSched.toFixed(1)}h</span>:<span style={{color:IBM.gray30,fontSize:11}}>—</span>}</td>
+                      <td style={TD2(alt)}><span style={{fontWeight:600,fontSize:12,color:hColor}}>{hLabel}</span></td>
+                      <td style={TD2(alt)}>
+                        {v.rateStatus==="match"&&<span style={{background:IBM.green10,color:IBM.green50,border:"1px solid "+IBM.green20,padding:"2px 7px",fontSize:11,fontWeight:700}}>✅ Rate OK</span>}
+                        {v.rateStatus==="mismatch"&&<span style={{background:IBM.red10,color:IBM.red60,border:"1px solid #ffb3b8",padding:"2px 7px",fontSize:11,fontWeight:700}}>❌ Rate !</span>}
+                        {v.rateStatus==="no_ref"&&<span style={{background:IBM.gray10,color:IBM.gray50,padding:"2px 7px",fontSize:11}}>— No ref</span>}
+                      </td>
+                      <td style={TD2(alt)}>{statusBadge(v)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {invoices.length===0&&!loading&&(
+        <div style={{textAlign:"center",padding:"48px 24px",color:IBM.gray50}}>
+          <div style={{fontSize:40,marginBottom:12}}>📄</div>
+          <div style={{fontSize:15,fontWeight:600,marginBottom:6}}>No invoices loaded</div>
+          <div style={{fontSize:13}}>Upload IBM invoice PDFs (e.g. RATT8_Apr'26_B392997.pdf) to start validating</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── BILL RATE VALIDATION TAB ─────────────────────────────────────────────────
 // Parses a Labor Claim Details XLSX (same 67-col schema as IBM timesheet files)
 // and builds an editable reference table of BillingCode → BillingRate mappings.
@@ -4487,7 +4787,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
               </div>
               {/* Desktop nav - centered */}
               <div className="mgr-nav-links" style={{display:"flex",alignItems:"center",gap:4,flexShrink:0}}>
-                {[["dashboard","Dashboard"],["records","Records"],["billrate","💰 Bill Rate"],["calendar","📅 Calendar"],["users","👥 Users"],["profile","Profile"]].map(function(item){
+                {[["dashboard","Dashboard"],["records","Records"],["billrate","💰 Bill Rate"],["invoice","📄 Invoice"],["calendar","📅 Calendar"],["users","👥 Users"],["profile","Profile"]].map(function(item){
                   return <button key={item[0]} style={navBtn(activeTab===item[0])} onClick={function(){setActiveTab(item[0]);}}>{item[1]}</button>;
                 })}
                 <button style={{padding:"7px 16px",background:IBM.blue60,color:"#fff",border:"none",cursor:"pointer",fontSize:13,fontWeight:600,marginLeft:8}} onClick={function(){setShowImport(true);}}>↑ Import</button>
@@ -4507,7 +4807,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
             {/* Mobile dropdown menu */}
             {mobileMenuOpen&&(
               <div className="mgr-nav-mobile" style={{display:"none"}}>
-                {[["dashboard","📊 Dashboard"],["records","📋 Records"],["billrate","💰 Bill Rate"],["calendar","📅 Calendar"],["users","👥 Users"],["profile","👤 Profile"]].map(function(item){
+                {[["dashboard","📊 Dashboard"],["records","📋 Records"],["billrate","💰 Bill Rate"],["invoice","📄 Invoice"],["calendar","📅 Calendar"],["users","👥 Users"],["profile","👤 Profile"]].map(function(item){
                   return (
                     <button key={item[0]} className="nav-item"
                       style={{padding:"14px 24px",color:activeTab===item[0]?"#0f62fe":"#f4f4f4",fontSize:15,textAlign:"left",background:"none",border:"none",borderBottom:"1px solid #262626",cursor:"pointer",fontFamily:FF_SANS,fontWeight:activeTab===item[0]?600:400,width:"100%"}}
@@ -5034,6 +5334,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
       {activeTab==="users"&&<UserManagementTab session={session} showToast={showToast}/>}
       {activeTab==="calendar"&&<CalendarEventsTab calendarEvents={calendarEvents} setCalendarEvents={setCalendarEvents} showToast={showToast}/>}
       {activeTab==="billrate"&&<BillRateTab users={users} billRateDB={billRateDB} setBillRateDB={setBillRateDB} showToast={showToast}/>}
+      {activeTab==="invoice"&&<InvoiceTab users={users} billRateDB={billRateDB} showToast={showToast}/>}
 
       {activeTab==="profile"&&(
         <div style={{padding:"28px",maxWidth:800}}>
