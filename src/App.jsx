@@ -3819,71 +3819,131 @@ function UserManagementTab({session, showToast}) {
 
 
 // ─── INVOICE PARSING & VALIDATION ────────────────────────────────────────────
-// Parse IBM invoice PDFs (text-based). Pattern:
-//   Header: "Project Number  RATT8 - ..." → wbsId
-//   Name lines: ALL-CAPS (optionally preceded by "..")
-//   Week rows: "Week Ending YYYY-MM-DD  HH.H HRS  RATE  AMOUNT"
+// Normalise a date string from the invoice into YYYY-MM-DD.
+// Handles: "2025-03-14", "14-Mar-25", "14-Mar-2025", "March 14, 2025", "03/14/2025"
+function normInvoiceDate(s){
+  if(!s) return "";
+  s = s.trim();
+  // Already ISO
+  if(/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  var MONTHS={jan:"01",feb:"02",mar:"03",apr:"04",may:"05",jun:"06",
+              jul:"07",aug:"08",sep:"09",oct:"10",nov:"11",dec:"12"};
+  // DD-Mon-YY or DD-Mon-YYYY
+  var m1=s.match(/^(\d{1,2})[-\/\s]([A-Za-z]{3})[-\/\s](\d{2,4})$/);
+  if(m1){
+    var yr=m1[3].length===2?"20"+m1[3]:m1[3];
+    return yr+"-"+(MONTHS[m1[2].toLowerCase()]||"00")+"-"+m1[1].padStart(2,"0");
+  }
+  // Mon DD, YYYY
+  var m2=s.match(/^([A-Za-z]{3,})\s+(\d{1,2}),?\s+(\d{4})$/);
+  if(m2){
+    return m2[3]+"-"+(MONTHS[m2[1].slice(0,3).toLowerCase()]||"00")+"-"+m2[2].padStart(2,"0");
+  }
+  // MM/DD/YYYY
+  var m3=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if(m3) return m3[3]+"-"+m3[1].padStart(2,"0")+"-"+m3[2].padStart(2,"0");
+  return s;
+}
+
+// Extract true lines from a pdfjs page by grouping text items by Y coordinate.
+// Items on the same Y (within 2pt tolerance) are joined as one line, sorted by X.
+async function extractPageLines(page){
+  var tc = await page.getTextContent();
+  var byY = {};
+  tc.items.forEach(function(item){
+    if(!item.str.trim()) return;
+    var y = Math.round(item.transform[5] / 2) * 2; // bucket to 2pt
+    if(!byY[y]) byY[y] = [];
+    byY[y].push({x: item.transform[4], str: item.str});
+  });
+  // PDF y-axis is bottom-up → descending sort = top of page first
+  return Object.keys(byY).map(Number).sort(function(a,b){return b-a;})
+    .map(function(y){
+      return byY[y].sort(function(a,b){return a.x-b.x;})
+        .map(function(i){return i.str;}).join(" ").replace(/\s+/g," ").trim();
+    }).filter(Boolean);
+}
+
 async function parseInvoicePDF(file){
   var ab = await file.arrayBuffer();
   var pdf = await pdfjsLib.getDocument({data: ab}).promise;
-  var fullText = "";
+
+  // Collect all lines preserving page structure
+  var allLines = [];
   for(var i=1; i<=pdf.numPages; i++){
     var page = await pdf.getPage(i);
-    var tc = await page.getTextContent();
-    var pageText = tc.items.map(function(t){ return t.str; }).join(" ");
-    fullText += " " + pageText;
+    var lines = await extractPageLines(page);
+    allLines = allLines.concat(lines);
   }
+  var fullText = allLines.join(" "); // for metadata regexes
 
-  // Extract invoice metadata
-  var invoiceNo   = (fullText.match(/Invoice No\.?:?\s*(B\d+)/i)||[])[1] || "";
-  var invoiceDate = (fullText.match(/Invoice Date:?\s*([\w]+ \d+ \d{4})/i)||[])[1] || "";
-  var wbsRaw      = (fullText.match(/Project Number\s+([A-Z0-9]+)\s*[-–]/i)||[])[1] || "";
-  var projectName = (fullText.match(/Project Number\s+[A-Z0-9]+\s*[-–]\s*([^\n]+?)(?:Install|CIO|Application|$)/i)||[])[1]||"";
+  // ── Metadata ─────────────────────────────────────────────────────────────
+  // Invoice number: "Invoice No: B123456" or "Invoice Number B123456"
+  var invoiceNo = (fullText.match(/Invoice\s*(?:No|Number)\.?:?\s*([A-Z0-9-]+)/i)||[])[1] || "";
+  // Invoice date
+  var invoiceDate = (fullText.match(/Invoice\s*Date:?\s*([\d]{1,2}[-\/\s][A-Za-z]{3}[-\/\s][\d]{2,4}|[A-Za-z]+ \d{1,2},?\s*\d{4}|\d{4}-\d{2}-\d{2})/i)||[])[1] || "";
+  // WBS / Project Number — try multiple label patterns
+  var wbsRaw = (fullText.match(/Project\s*(?:Number|No\.?|#):?\s*([A-Z][A-Z0-9]{2,})/i)||
+                fullText.match(/WBS\s*(?:ID|No\.?)?:?\s*([A-Z][A-Z0-9]{2,})/i)||
+                fullText.match(/Account\s*(?:ID|No\.?)?:?\s*([A-Z][A-Z0-9]{2,})/i)||[])[1] || "";
+  var projectName = (fullText.match(/Project\s*(?:Number|No\.?)\s*[A-Z0-9]+\s*[-–:]\s*([^|]+?)(?:\s{2,}|$)/i)||[])[1]||"";
 
-  // Parse line by line for names and week entries
-  // Normalise: collapse multiple spaces → single space, split on common line breaks
-  var lines = fullText
-    .replace(/Week Ending/g, "\nWeek Ending")
-    .split(/\n/)
-    .map(function(l){ return l.replace(/\s+/g," ").trim(); })
-    .filter(Boolean);
+  // ── Line-by-line parse for names and week entries ─────────────────────────
+  // Name: a line that is entirely UPPER-CASE words (2+ words, letters/spaces/hyphens/apostrophes)
+  //   e.g. "RANJANI DHANDAPANI" or ".. JOHN DOE"
+  var nameRe = /^\.{0,3}\s*([A-Z][A-Z''\-]{0,}(?:\s+[A-Z][A-Z''\-]{0,})+)\s*$/;
+  // "Week Ending" row — date token can be any non-space date format, followed by hours, HRS, rate, amount
+  // e.g. "Week Ending 14-Mar-25 40.00 HRS 185.00 7,400.00"
+  // or   "Week Ending 2025-03-14 40.00 HRS 185.00 7,400.00"
+  var weekRe = /Week\s*Ending\s+(\S+(?:\s+\S+)?)\s+([\d.]+)\s*HRS?\s+([\d.]+)\s+([\d,]+\.?\d*)/i;
 
-  var nameRe    = /^[\.]{0,2}\s*([A-Z][A-Z ,\.'\-]{3,}[A-Z])$/;
-  var weekRe    = /^Week Ending\s+(\d{4}-\d{2}-\d{2})\s+([\d.]+)\s+HRS\s+([\d.]+)\s+([\d,]+\.\d{2})/;
-  var records   = []; // {name, weekEnding, hours, rate, amount}
-  var curName   = "";
+  var SKIP_NAMES = /^(INVOICE|BANK\s|ATTN|IBM\s|TORONTO|SCARBOROUGH|ACCOUNTING|INSTALLATION|SUMMARY|TOTAL\s|HARMONIZED|PAGE\s|PAYABLE|OVERDUE|ACCESS|PLEASE|DESCRIPTION|QUANTITY|CHARGE\s|BILL\s|GLOBAL\s|SERVICES|AMOUNT|RATE\s|EXTENDED|LABOUR|TAX|HST|GST|SUB\s*TOTAL|GRAND|NOTE|TERMS|NET\s|APPROVED|PREPARED|AUTHORIZED|SIGNATURE|DATE\s|PURCHASE)/i;
 
-  lines.forEach(function(line){
-    var nm = line.match(nameRe);
-    // Filter out known non-name all-caps lines
-    if(nm && !/^(INVOICE|BANK OF|ATTN|IBM|TORONTO|SCARBOROUGH|ACCOUNTING|INSTALL|SUMMARY|TOTAL|HARMONIZED|PAGE|PAYABLE|OVERDUE|ACCESS|PLEASE|DESCRIPTION|QUANTITY|CHARGE|BILL AMOUNT|GLOBAL BUSINESS)/i.test(nm[1])){
-      curName = nm[1].replace(/^\.*\s*/,"").trim();
-    }
+  var records = [];
+  var curName = "";
+
+  allLines.forEach(function(line){
+    // Check for Week Ending row first (higher specificity)
     var wm = line.match(weekRe);
-    if(wm && curName){
-      records.push({
-        name:       curName,
-        weekEnding: wm[1],           // YYYY-MM-DD
-        hours:      parseFloat(wm[2]),
-        rate:       parseFloat(wm[3]),
-        amount:     parseFloat(wm[4].replace(/,/g,"")),
-      });
+    if(wm){
+      if(curName){
+        // Date token might be two parts (e.g. "14 Mar 2025") — wm[1] already captures
+        var dateStr = normInvoiceDate(wm[1].trim());
+        records.push({
+          name:       curName,
+          weekEnding: dateStr,
+          hours:      parseFloat(wm[2]) || 0,
+          rate:       parseFloat(wm[3]) || 0,
+          amount:     parseFloat(wm[4].replace(/,/g,"")) || 0,
+        });
+      }
+      return;
+    }
+    // Check for person name line
+    var nm = line.match(nameRe);
+    if(nm && !SKIP_NAMES.test(nm[1])){
+      curName = nm[1].trim();
     }
   });
 
-  // Aggregate per person: totalHours, rate (most common), weeks covered
+  // ── Aggregate per person ──────────────────────────────────────────────────
   var byPerson = {};
   records.forEach(function(r){
-    if(!byPerson[r.name]) byPerson[r.name] = {name:r.name, totalHours:0, rate:r.rate, weeks:[], wbsId:wbsRaw, invoiceNo:invoiceNo, invoiceDate:invoiceDate};
-    byPerson[r.name].totalHours += r.hours;
+    if(!byPerson[r.name]){
+      byPerson[r.name] = {name:r.name, totalHours:0, rate:r.rate, weeks:[], wbsId:wbsRaw, invoiceNo:invoiceNo, invoiceDate:invoiceDate};
+    }
+    byPerson[r.name].totalHours = Math.round((byPerson[r.name].totalHours + r.hours)*100)/100;
     byPerson[r.name].weeks.push(r.weekEnding);
   });
 
   return {
-    invoiceNo, invoiceDate, wbsId: wbsRaw, projectName: projectName.trim(),
+    invoiceNo, invoiceDate: normInvoiceDate(invoiceDate), wbsId: wbsRaw,
+    projectName: projectName.trim(),
     fileName: file.name,
     people: Object.values(byPerson),
     rawRecords: records,
+    // Debug: expose raw lines so issues can be diagnosed
+    _lines: allLines,
   };
 }
 
@@ -3894,8 +3954,7 @@ function normInvName(s){
     .split(/\s+/).sort().join(" ");
 }
 
-function InvoiceTab({users, billRateDB, showToast}){
-  var [invoices,    setInvoices]    = useState([]);  // parsed invoice objects
+function InvoiceTab({users, billRateDB, invoices, setInvoices, showToast}){
   var [loading,     setLoading]     = useState(false);
   var [dragOver,    setDragOver]    = useState(false);
   var [selInvoice,  setSelInvoice]  = useState(null); // invoiceNo filter
@@ -3970,7 +4029,13 @@ function InvoiceTab({users, billRateDB, showToast}){
         return next;
       });
       var total = results.reduce(function(s,r){ return s+r.people.length; },0);
-      showToast("✓ Loaded "+pdfs.length+" invoice(s) — "+total+" people parsed");
+      // Debug: log extracted lines so format issues can be diagnosed
+      results.forEach(function(r){ console.log("[Invoice]",r.fileName,"lines:",r._lines); });
+      if(total===0){
+        showToast("⚠ "+pdfs.length+" PDF(s) loaded but 0 people found — check console for raw lines","warn");
+      } else {
+        showToast("✓ Loaded "+pdfs.length+" invoice(s) — "+total+" people parsed");
+      }
     } catch(err){
       showToast("Error parsing PDF: "+err.message,"error");
     }
@@ -4548,6 +4613,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
   const[filterRM,setFilterRM]=useState("");        // resource manager filter
   const[filterWBS,setFilterWBS]=useState("");      // WBS/project filter
   const[billRateDB,setBillRateDB]=useState([]);   // Bill rate reference database
+  const[invoices,  setInvoices]  =useState([]);   // Parsed invoice PDFs (shared with InvoiceTab)
   const[filterSource,setFilterSource]=useState("all"); // all|Both|IBM only|Clarity only
   const[confirmDelete,setConfirmDelete]=useState(null); // user id to delete
   const[emailLog,setEmailLog]=useState([]);
@@ -4698,6 +4764,48 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
     else if(sortMode==="hours-gap") l=l.slice().sort(function(a,b){return (Number(b.scheduled)-Number(b.entered))-(Number(a.scheduled)-Number(a.entered));});
     return l;
   },[users,filterStatus,filterSource,search,filterRM,filterWBS,sortMode,showAllMonths,selMonth,selYear]);
+
+  // Invoice lookup: normalised name → aggregated invoice person record
+  const invoiceLookup=useMemo(function(){
+    var map={};
+    invoices.forEach(function(inv){
+      inv.people.forEach(function(p){
+        var key=normInvName(p.name);
+        if(!map[key]) map[key]={totalHours:0,rate:p.rate,invoiceNo:p.invoiceNo||inv.invoiceNo,wbsId:p.wbsId||inv.wbsId,weeks:[]};
+        map[key].totalHours=Math.round((map[key].totalHours+p.totalHours)*100)/100;
+        (p.weeks||[]).forEach(function(w){map[key].weeks.push(w);});
+      });
+    });
+    return map;
+  },[invoices]);
+
+  // Bill rate lookup for Records tab: given a user, return {status,refRate}
+  function recBillRateStatus(u){
+    if(!billRateDB.length) return null;
+    var refs=billRateDB.filter(function(r){ return r.wbsId && u.wbsId && r.wbsId===u.wbsId; });
+    if(!refs.length) return {status:"no_ref"};
+    var userRate=Number(u.billingRate||0);
+    if(!userRate) return {status:"no_rate",refRate:refs[0].billingRate};
+    var hit=refs.find(function(r){ return Math.abs(Number(r.billingRate)-userRate)<0.01; });
+    return {status:hit?"match":"mismatch",refRate:refs[0].billingRate,userRate};
+  }
+
+  // Invoice status for a user in the records row
+  function recInvStatus(u){
+    if(!invoices.length) return null;
+    var key=normInvName(u.name);
+    var inv=invoiceLookup[key];
+    if(!inv){
+      // try clarityName
+      var k2=normInvName(u.clarityName||"");
+      inv=k2?invoiceLookup[k2]:null;
+    }
+    if(!inv) return {status:"not_found"};
+    var clarityHrs=Number(u.entered)||0;
+    var diff=Math.round((inv.totalHours-clarityHrs)*100)/100;
+    var status=Math.abs(diff)<0.1?"match":diff>0?"over":"under";
+    return {status,invHrs:inv.totalHours,clarityHrs,diff};
+  }
 
   const handleGenNotif=u=>{if(getStatus(u)==="green")return;setNotifications(p=>({...p,[u.id]:genNotifForUser(u,monthLabel,periodLabel)}));showToast(`✓ Ready for ${u.name}`);};
   const handleSendEmail=u=>{
@@ -5186,7 +5294,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
           })()}
           <div className="records-table-wrap" style={{overflowX:"auto",margin:"0 28px"}}>
             <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-              <thead><tr>{["","","Name","Source","WBS / Talent ID","Dept / Country","Resource Mgr","Workitems","Scheduled","Actual Hrs","Variance","Status","Billing Code","Actions"].map(function(h){ return <th key={h} className={(h==="Billing Code"||h==="Workitems")?"col-hide-mobile":""} style={TH}>{h}</th>; })}</tr></thead>
+              <thead><tr>{["","","Name","Source","WBS / Talent ID","Dept / Country","Resource Mgr","Workitems","Scheduled","Actual Hrs","Variance","Status","Billing Code","💰 Bill Rate","📄 Invoice Hrs","Actions"].map(function(h){ return <th key={h} className={(h==="Billing Code"||h==="Workitems"||h==="💰 Bill Rate"||h==="📄 Invoice Hrs")?"col-hide-mobile":""} style={TH}>{h}</th>; })}</tr></thead>
               <tbody>
                 {filtered.map((u,idx)=>{
                   const alt=idx%2,st=getStatus(u),diff=Number(u.scheduled)-Number(u.entered),absDiff=Math.abs(diff);
@@ -5311,6 +5419,8 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
                         }
                       </td>
                       <td className="col-hide-mobile" style={TD(alt)}><span style={{fontSize:11,color:IBM.gray60}}>{u.billingCode||"—"}</span></td>
+                      {(()=>{var brs=recBillRateStatus(u);if(!brs)return <td className="col-hide-mobile" style={TD(alt)}><span style={{fontSize:11,color:IBM.gray30}}>—</span></td>;if(brs.status==="match")return <td className="col-hide-mobile" style={TD(alt)}><span style={{fontSize:10,padding:"2px 6px",fontWeight:700,background:IBM.green10,color:IBM.green50,border:"1px solid "+IBM.green20}}>✓ Match</span></td>;if(brs.status==="mismatch")return <td className="col-hide-mobile" style={TD(alt)}><span title={"Ref: "+brs.refRate} style={{fontSize:10,padding:"2px 6px",fontWeight:700,background:IBM.red10,color:IBM.red60,border:"1px solid #ffb3b8"}}>✗ {brs.userRate}≠{brs.refRate}</span></td>;if(brs.status==="no_rate")return <td className="col-hide-mobile" style={TD(alt)}><span style={{fontSize:10,padding:"2px 6px",background:IBM.yellow10,color:"#8e6a00",border:"1px solid "+IBM.yellow30}}>No rate</span></td>;return <td className="col-hide-mobile" style={TD(alt)}><span style={{fontSize:10,color:IBM.gray40}}>No ref</span></td>;})()}
+                      {(()=>{var ivs=recInvStatus(u);if(!ivs)return <td className="col-hide-mobile" style={TD(alt)}><span style={{fontSize:11,color:IBM.gray30}}>—</span></td>;if(ivs.status==="not_found")return <td className="col-hide-mobile" style={TD(alt)}><span style={{fontSize:10,color:IBM.gray40}}>Not in invoice</span></td>;if(ivs.status==="match")return <td className="col-hide-mobile" style={TD(alt)}><span style={{fontSize:10,padding:"2px 6px",fontWeight:700,background:IBM.green10,color:IBM.green50,border:"1px solid "+IBM.green20}}>✓ {ivs.invHrs}h</span></td>;var col=ivs.status==="over"?IBM.red60:IBM.orange40;var bg=ivs.status==="over"?IBM.red10:IBM.yellow10;var brd=ivs.status==="over"?"#ffb3b8":IBM.yellow30;return <td className="col-hide-mobile" style={TD(alt)}><span title={"Inv "+ivs.invHrs+"h vs Clarity "+ivs.clarityHrs+"h"} style={{fontSize:10,padding:"2px 6px",fontWeight:700,background:bg,color:col,border:"1px solid "+brd}}>{ivs.status==="over"?"▲":"▼"} {ivs.invHrs}h ({ivs.diff>0?"+":""}{ivs.diff}h)</span></td>;})()}
                       <td style={Object.assign({},TD(alt),{whiteSpace:"nowrap"})} onClick={function(e){e.stopPropagation();}}>
                         <div style={{display:"flex",gap:4,alignItems:"center"}}>
                           {st!=="green"&&st!=="purple"&&<React.Fragment>
@@ -5334,7 +5444,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
       {activeTab==="users"&&<UserManagementTab session={session} showToast={showToast}/>}
       {activeTab==="calendar"&&<CalendarEventsTab calendarEvents={calendarEvents} setCalendarEvents={setCalendarEvents} showToast={showToast}/>}
       {activeTab==="billrate"&&<BillRateTab users={users} billRateDB={billRateDB} setBillRateDB={setBillRateDB} showToast={showToast}/>}
-      {activeTab==="invoice"&&<InvoiceTab users={users} billRateDB={billRateDB} showToast={showToast}/>}
+      {activeTab==="invoice"&&<InvoiceTab users={users} billRateDB={billRateDB} invoices={invoices} setInvoices={setInvoices} showToast={showToast}/>}
 
       {activeTab==="profile"&&(
         <div style={{padding:"28px",maxWidth:800}}>
