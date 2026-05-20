@@ -2,6 +2,7 @@ import React, { useState, useRef, useMemo, useEffect, useCallback } from "react"
 import * as XLSX from "xlsx";
 import * as pdfjsLib from "pdfjs-dist";
 import * as OD from "./onedrive.js";
+import * as LFS from "./localfs.js";
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from "recharts";
 
@@ -2342,7 +2343,7 @@ function mergeRecords(ibmRecords, clarityRecords, manualMatches) {
 
 
 // ─── IMPORT MODAL ─────────────────────────────────────────────────────────────
-function ImportModal({onImport, onClose, odConnected}) {
+function ImportModal({onImport, onClose, odConnected, lfsHandle}) {
   // IBM: array of {file, result, error, id}  — supports multiple files
   const[ibmFiles, setIbmFiles] = useState([]);
   const[clarityFiles, setClarityFiles] = useState([]); // array of {id,file,result,error,loading}
@@ -2350,7 +2351,8 @@ function ImportModal({onImport, onClose, odConnected}) {
   const[manualMatches, setManualMatches] = useState({}); // {ibmNormName: clarityNormName}
   const[showManualUI, setShowManualUI] = useState(false);
   const[relinkUserId, setRelinkUserId] = useState(null); // ibmNormName of row currently showing relink dropdown
-  const[odPickMode, setOdPickMode] = useState(null); // "ibm" | "clarity" | null
+  const[odPickMode,  setOdPickMode]  = useState(null); // "ibm" | "clarity" | null  (MSAL)
+  const[lfsPickMode, setLfsPickMode] = useState(null); // "ibm" | "clarity" | null  (Local folder)
   const ibmRef = useRef();
   const clarityRef = useRef();
 
@@ -2577,16 +2579,22 @@ function ImportModal({onImport, onClose, odConnected}) {
             </div>
             <div style={{fontSize:10, opacity:0.85, marginTop:2}}>Sheet: "Labor claim only details" (fuzzy match) — upload multiple files for different WBS IDs</div>
           </div>
-          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+          <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
             <button
               onClick={function(){ ibmRef.current.click(); }}
               style={{background:"rgba(255,255,255,0.15)", border:"1px solid rgba(255,255,255,0.4)", color:"#fff", padding:"5px 12px", cursor:"pointer", fontSize:11, fontWeight:600, whiteSpace:"nowrap"}}>
               + Add File
             </button>
+            {lfsHandle&&(
+              <button onClick={function(){setLfsPickMode("ibm");}}
+                style={{background:"rgba(255,255,255,0.3)",border:"1px solid rgba(255,255,255,0.8)",color:"#fff",padding:"5px 12px",cursor:"pointer",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>
+                📁 From OneDrive Folder
+              </button>
+            )}
             {odConnected&&(
               <button onClick={function(){setOdPickMode("ibm");}}
                 style={{background:"rgba(255,255,255,0.25)",border:"1px solid rgba(255,255,255,0.6)",color:"#fff",padding:"5px 12px",cursor:"pointer",fontSize:11,fontWeight:600,whiteSpace:"nowrap"}}>
-                ☁ OneDrive
+                ☁ OneDrive (API)
               </button>
             )}
           </div>
@@ -2674,15 +2682,21 @@ function ImportModal({onImport, onClose, odConnected}) {
             </div>
             <div style={{fontSize:10, opacity:0.85, marginTop:2}}>Sheet contains month name (e.g. CORP_AML_FCU_Feb2026_Actual hrs) — upload one file per month</div>
           </div>
-          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+          <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
             <button onClick={function(){ clarityRef.current.click(); }}
               style={{background:"rgba(255,255,255,0.15)", border:"1px solid rgba(255,255,255,0.4)", color:"#fff", padding:"5px 12px", cursor:"pointer", fontSize:11, fontWeight:600, whiteSpace:"nowrap"}}>
               + Add File
             </button>
+            {lfsHandle&&(
+              <button onClick={function(){setLfsPickMode("clarity");}}
+                style={{background:"rgba(255,255,255,0.3)",border:"1px solid rgba(255,255,255,0.8)",color:"#fff",padding:"5px 12px",cursor:"pointer",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>
+                📁 From OneDrive Folder
+              </button>
+            )}
             {odConnected&&(
               <button onClick={function(){setOdPickMode("clarity");}}
                 style={{background:"rgba(255,255,255,0.25)",border:"1px solid rgba(255,255,255,0.6)",color:"#fff",padding:"5px 12px",cursor:"pointer",fontSize:11,fontWeight:600,whiteSpace:"nowrap"}}>
-                ☁ OneDrive
+                ☁ OneDrive (API)
               </button>
             )}
           </div>
@@ -2751,7 +2765,17 @@ function ImportModal({onImport, onClose, odConnected}) {
 
   return (
     <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(22,22,22,.82)",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center"}}>
-      {/* OneDrive file picker overlay (z-index 500, above import modal) */}
+      {/* Local folder file picker overlay */}
+      {lfsPickMode&&lfsHandle&&(
+        <LocalFolderFilePicker
+          dirHandle={lfsHandle}
+          fileFilter={function(n){ return /\.(xlsx?|xls)$/i.test(n); }}
+          onPick={function(ab,name){ lfsPickMode==="ibm" ? addIBMFromBuffer(ab,name) : addClarityFromBuffer(ab,name); setLfsPickMode(null); }}
+          onClose={function(){setLfsPickMode(null);}}
+          showToast={function(m){ alert(m); }}
+        />
+      )}
+      {/* OneDrive API file picker overlay (z-index 500, above import modal) */}
       {odPickMode&&(
         <OneDriveFilePicker
           fileFilter={function(n){ return /\.(xlsx?|xls)$/i.test(n); }}
@@ -4246,8 +4270,97 @@ function InvoiceTab({users, billRateDB, invoices, setInvoices, showToast}){
   );
 }
 
-// ─── ONEDRIVE FILE PICKER ─────────────────────────────────────────────────────
-// Modal file browser that lets the user pick an Excel/PDF file from OneDrive.
+// ─── LOCAL FOLDER FILE PICKER ─────────────────────────────────────────────────
+// Browses a FileSystemDirectoryHandle (local OneDrive/SharePoint sync folder).
+// Calls onPick(arrayBuffer, fileName) when a file is selected.
+function LocalFolderFilePicker({ dirHandle, onPick, onClose, fileFilter, showToast }){
+  var [items,     setItems]    = useState([]);
+  var [loading,   setLoading]  = useState(true);
+  var [curHandle, setCurHandle]= useState(dirHandle);
+  var [breadcrumb,setBreadcrumb]=useState([{handle:dirHandle, name:dirHandle.name}]);
+  var [picking,   setPicking]  = useState(false);
+
+  useEffect(function(){
+    setLoading(true);
+    LFS.listFiles(curHandle, fileFilter).then(function(list){
+      setItems(list); setLoading(false);
+    }).catch(function(e){
+      showToast("Cannot read folder: "+e.message,"error"); setLoading(false);
+    });
+  },[curHandle]);
+
+  function openFolder(item){
+    setBreadcrumb(function(b){ return [...b,{handle:item.handle,name:item.name}]; });
+    setCurHandle(item.handle);
+  }
+  function navTo(crumb,idx){
+    setBreadcrumb(function(b){ return b.slice(0,idx+1); });
+    setCurHandle(crumb.handle);
+  }
+  async function pickFile(item){
+    setPicking(true);
+    try{
+      var ab = await LFS.readFile(item.handle);
+      onPick(ab, item.name);
+    }catch(e){ showToast("Read failed: "+e.message,"error"); }
+    setPicking(false);
+  }
+
+  return(
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.55)",zIndex:500,display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <div style={{background:"#fff",width:620,maxHeight:"80vh",display:"flex",flexDirection:"column",boxShadow:"0 8px 40px rgba(0,0,0,0.3)"}}>
+        <div style={{background:"#0062cc",color:"#fff",padding:"14px 20px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <span style={{fontSize:20}}>📁</span>
+            <span style={{fontWeight:700,fontSize:15}}>Browse — {breadcrumb[0].name}</span>
+          </div>
+          <button onClick={onClose} style={{background:"none",border:"none",color:"#fff",fontSize:20,cursor:"pointer",lineHeight:1}}>✕</button>
+        </div>
+        {/* Breadcrumb */}
+        <div style={{padding:"8px 16px",borderBottom:"1px solid #e0e0e0",display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",fontSize:13,background:"#f4f4f4"}}>
+          {breadcrumb.map(function(crumb,idx){
+            var isLast=idx===breadcrumb.length-1;
+            return(
+              <span key={idx} style={{display:"flex",alignItems:"center",gap:6}}>
+                {idx>0&&<span style={{color:"#8d8d8d"}}>/</span>}
+                <button onClick={function(){if(!isLast)navTo(crumb,idx);}}
+                  style={{background:"none",border:"none",cursor:isLast?"default":"pointer",
+                    color:isLast?"#161616":"#0f62fe",fontWeight:isLast?600:400,padding:0,fontSize:13}}>
+                  {crumb.name}
+                </button>
+              </span>
+            );
+          })}
+        </div>
+        <div style={{flex:1,overflowY:"auto",padding:"8px 0"}}>
+          {loading ? (
+            <div style={{padding:40,textAlign:"center",color:"#6f6f6f",fontSize:13}}>Loading…</div>
+          ) : items.length===0 ? (
+            <div style={{padding:40,textAlign:"center",color:"#6f6f6f",fontSize:13}}>No matching files in this folder.</div>
+          ) : items.map(function(item,i){
+            var isDir=item.kind==="directory";
+            var ext=(item.name||"").split(".").pop().toLowerCase();
+            var icon=isDir?"📁":/xlsx?/.test(ext)?"📊":/pdf/.test(ext)?"📄":"📎";
+            return(
+              <div key={i} onClick={function(){isDir?openFolder(item):pickFile(item);}}
+                style={{display:"flex",alignItems:"center",gap:12,padding:"9px 20px",cursor:"pointer",borderBottom:"1px solid #f0f0f0",background:"#fff"}}
+                onMouseEnter={function(e){e.currentTarget.style.background="#edf5ff";}}
+                onMouseLeave={function(e){e.currentTarget.style.background="#fff";}}>
+                <span style={{fontSize:18,flexShrink:0}}>{icon}</span>
+                <span style={{flex:1,fontSize:13,fontWeight:isDir?600:400,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{item.name}</span>
+                {isDir&&<span style={{fontSize:11,color:"#6f6f6f",flexShrink:0}}>▶</span>}
+              </div>
+            );
+          })}
+        </div>
+        {picking&&<div style={{padding:"10px 20px",background:"#edf5ff",textAlign:"center",fontSize:13,color:"#0043ce"}}>Reading file…</div>}
+      </div>
+    </div>
+  );
+}
+
+// ─── ONEDRIVE FILE PICKER (MSAL / Graph API) ──────────────────────────────────
+// Modal file browser that lets the user pick an Excel/PDF file from OneDrive via Graph API.
 // Calls onPick(arrayBuffer, fileName) when a file is selected.
 function OneDriveFilePicker({ onPick, onClose, fileFilter, showToast }){
   var [items,     setItems]    = useState([]);
@@ -4352,123 +4465,183 @@ function OneDriveFilePicker({ onPick, onClose, fileFilter, showToast }){
   );
 }
 
-// ─── ONEDRIVE SETTINGS PANEL ───────────────────────────────────────────────────
+// ─── CLOUD STORAGE PANEL ──────────────────────────────────────────────────────
 // Displayed inside the Profile tab.
-function OneDrivePanel({ odClientId, setOdClientId, odConnected, setOdConnected, odUser, setOdUser,
-                          odSyncing, odLastSync, onSaveDB, onLoadDB, showToast }){
-  var [showSetup, setShowSetup] = useState(false);
+// Method A (recommended): Local OneDrive sync folder via File System Access API — no Azure needed.
+// Method B (fallback):    MSAL OAuth with Azure App Client ID.
+function OneDrivePanel({ lfsHandle, setLfsHandle, setLfsName, lfsSyncing, lfsLastSync, onLfsSave, onLfsLoad,
+                          odClientId, setOdClientId, odConnected, setOdConnected, odUser, setOdUser,
+                          odSyncing, odLastSync, onOdSave, onOdLoad, showToast }){
+  var lfsOk = LFS.isSupported();
+  var lfsConnected = !!lfsHandle;
+  var [showMsal, setShowMsal] = useState(false);
   var [clientIdInput, setClientIdInput] = useState(odClientId||"");
   var [connecting, setConnecting] = useState(false);
 
-  async function handleConnect(){
+  async function handlePickFolder(){
+    try{
+      var handle = await LFS.pickFolder();
+      setLfsHandle(handle);
+      setLfsName(handle.name);
+      localStorage.setItem("lfs_folder_name", handle.name);
+      showToast("✓ Connected to folder: "+handle.name);
+    }catch(e){
+      if(e.name!=="AbortError") showToast("Could not open folder: "+e.message,"error");
+    }
+  }
+  function handleDisconnectFolder(){
+    LFS.clearHandle().catch(function(){});
+    setLfsHandle(null); setLfsName("");
+    localStorage.removeItem("lfs_folder_name");
+    localStorage.removeItem("lfs_last_sync");
+    showToast("Folder disconnected");
+  }
+
+  async function handleMsalConnect(){
     if(!clientIdInput.trim()){ showToast("Paste your Azure Client ID first","error"); return; }
     setConnecting(true);
     try{
       await OD.initMsal(clientIdInput.trim());
-      var account = await OD.signIn();
+      await OD.signIn();
       var me = await OD.getMe();
       localStorage.setItem("od_client_id", clientIdInput.trim());
       setOdClientId(clientIdInput.trim());
-      setOdConnected(true);
-      setOdUser(me);
-      showToast("✓ Connected to OneDrive as "+me.displayName);
-    }catch(e){
-      showToast("Connection failed: "+e.message,"error");
-    }
+      setOdConnected(true); setOdUser(me);
+      showToast("✓ Connected as "+me.displayName);
+    }catch(e){ showToast("Connection failed: "+e.message,"error"); }
     setConnecting(false);
   }
-
-  async function handleDisconnect(){
+  async function handleMsalDisconnect(){
     try{ await OD.signOut(); }catch(e){}
     setOdConnected(false); setOdUser(null);
-    localStorage.removeItem("od_client_id");
-    localStorage.removeItem("od_last_sync");
-    setOdClientId("");
-    setClientIdInput("");
+    localStorage.removeItem("od_client_id"); localStorage.removeItem("od_last_sync");
+    setOdClientId(""); setClientIdInput("");
     showToast("Disconnected from OneDrive");
   }
 
+  var anyConnected = lfsConnected || odConnected;
+
   return(
     <div style={{background:"#fff",border:"1px solid #e0e0e0",marginBottom:20}}>
-      {/* Header */}
       <div style={{background:"#0062cc",color:"#fff",padding:"14px 20px",display:"flex",alignItems:"center",gap:12}}>
         <span style={{fontSize:22}}>☁</span>
         <div>
-          <div style={{fontWeight:700,fontSize:14}}>OneDrive Integration</div>
-          <div style={{fontSize:12,opacity:0.85}}>Connect your Microsoft 365 account to use OneDrive as source & database</div>
+          <div style={{fontWeight:700,fontSize:14}}>OneDrive / File Storage</div>
+          <div style={{fontSize:12,opacity:0.85}}>Use your OneDrive sync folder as data source and database — no Azure setup needed</div>
         </div>
-        {odConnected&&<div style={{marginLeft:"auto",background:"#24a148",padding:"3px 10px",fontSize:11,fontWeight:700,letterSpacing:"0.05em"}}>● CONNECTED</div>}
+        {anyConnected&&<div style={{marginLeft:"auto",background:"#24a148",padding:"3px 10px",fontSize:11,fontWeight:700,letterSpacing:"0.05em"}}>● CONNECTED</div>}
       </div>
 
       <div style={{padding:"20px 24px"}}>
-        {!odConnected ? (
-          <>
-            {/* Setup guide */}
-            <div style={{background:"#edf5ff",border:"1px solid #a6c8ff",padding:"14px 16px",marginBottom:16,fontSize:13}}>
-              <div style={{fontWeight:700,color:"#0043ce",marginBottom:6}}>🔑 One-time setup: Get your Azure Client ID (5 min)</div>
-              <button onClick={function(){setShowSetup(function(v){return !v;})}}
-                style={{background:"none",border:"none",color:"#0f62fe",cursor:"pointer",fontSize:13,padding:0,textDecoration:"underline"}}>
-                {showSetup?"▲ Hide instructions":"▼ Show step-by-step instructions"}
+
+        {/* ── METHOD A: Local Folder (Recommended) ── */}
+        <div style={{marginBottom:20,padding:"16px",border:"2px solid "+(lfsConnected?"#24a148":"#e0e0e0"),background:lfsConnected?"#f6fef9":"#fafafa"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+            <span style={{fontSize:18}}>📁</span>
+            <div style={{flex:1}}>
+              <div style={{fontWeight:700,fontSize:14,color:"#161616"}}>
+                Local OneDrive Folder
+                <span style={{marginLeft:8,background:"#0f62fe",color:"#fff",fontSize:10,padding:"1px 7px",fontWeight:600}}>RECOMMENDED</span>
+              </div>
+              <div style={{fontSize:12,color:"#6f6f6f",marginTop:2}}>
+                Pick your OneDrive sync folder from Windows Explorer — no Azure setup or login required
+              </div>
+            </div>
+            {lfsConnected&&<span style={{color:"#24a148",fontWeight:700,fontSize:13}}>✓ Connected</span>}
+          </div>
+
+          {!lfsOk&&(
+            <div style={{background:"#fff3cd",border:"1px solid #ffc107",padding:"8px 12px",fontSize:12,color:"#856404"}}>
+              ⚠ File System Access API not supported in this browser. Use Chrome or Edge.
+            </div>
+          )}
+
+          {lfsOk&&!lfsConnected&&(
+            <div>
+              <div style={{fontSize:12,color:"#6f6f6f",marginBottom:10,lineHeight:"1.6"}}>
+                Your IBM OneDrive syncs files to a local folder, typically:<br/>
+                <code style={{background:"#f4f4f4",padding:"2px 6px",fontSize:11}}>C:\Users\[you]\OneDrive - IBM</code> or
+                <code style={{background:"#f4f4f4",padding:"2px 6px",fontSize:11,marginLeft:4}}>C:\Users\[you]\IBM</code>
+              </div>
+              <button onClick={handlePickFolder}
+                style={{padding:"9px 20px",background:"#0f62fe",color:"#fff",border:"none",cursor:"pointer",fontWeight:600,fontSize:13}}>
+                📁 Select OneDrive Folder
               </button>
-              {showSetup&&(
-                <ol style={{marginTop:10,paddingLeft:18,lineHeight:"1.9",color:"#161616"}}>
-                  <li>Go to <strong>portal.azure.com</strong> and sign in with your work account</li>
-                  <li>Search <em>"App registrations"</em> → click <strong>New registration</strong></li>
-                  <li>Name: <em>Timesheet Manager</em> — Account types: <strong>"Accounts in any organizational directory and personal Microsoft accounts"</strong></li>
-                  <li>Under <em>Redirect URI</em>: select <strong>Single-page application (SPA)</strong> and enter: <code style={{background:"#f4f4f4",padding:"1px 5px"}}>{window.location.origin}</code></li>
-                  <li>Click <strong>Register</strong> — copy the <strong>Application (client) ID</strong> (a GUID)</li>
-                  <li>Go to <em>API permissions</em> → Add → Microsoft Graph → Delegated → add: <code>Files.ReadWrite</code> and <code>User.Read</code></li>
-                  <li>Click <strong>Grant admin consent</strong> (or ask your IT admin to approve)</li>
-                  <li>Paste the Client ID below and click Connect</li>
-                </ol>
+            </div>
+          )}
+
+          {lfsOk&&lfsConnected&&(
+            <div>
+              <div style={{display:"flex",alignItems:"center",gap:16,flexWrap:"wrap",marginBottom:12}}>
+                <div style={{background:"#defbe6",border:"1px solid #a7f0ba",padding:"8px 14px",flex:1}}>
+                  <div style={{fontSize:13,fontWeight:700,color:"#0e6027"}}>📁 {lfsHandle.name}</div>
+                  {lfsLastSync&&<div style={{fontSize:11,color:"#6f6f6f",marginTop:2}}>Last synced: {lfsLastSync}</div>}
+                </div>
+                <button onClick={handleDisconnectFolder}
+                  style={{padding:"7px 13px",background:"none",border:"1px solid #da1e28",color:"#da1e28",cursor:"pointer",fontSize:12}}>
+                  Disconnect
+                </button>
+              </div>
+              <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                <button onClick={onLfsLoad} disabled={lfsSyncing}
+                  style={{padding:"8px 16px",background:lfsSyncing?"#c6c6c6":"#0f62fe",color:"#fff",border:"none",cursor:lfsSyncing?"default":"pointer",fontWeight:600,fontSize:13}}>
+                  {lfsSyncing?"Loading…":"⬇ Load Database"}
+                </button>
+                <button onClick={onLfsSave} disabled={lfsSyncing}
+                  style={{padding:"8px 16px",background:lfsSyncing?"#c6c6c6":"#0e6027",color:"#fff",border:"none",cursor:lfsSyncing?"default":"pointer",fontWeight:600,fontSize:13}}>
+                  {lfsSyncing?"Saving…":"⬆ Save Database"}
+                </button>
+              </div>
+              <div style={{marginTop:10,fontSize:11,color:"#6f6f6f"}}>
+                Saves <strong>TimesheetManager_DB.json</strong> to the selected folder — OneDrive auto-syncs it to the cloud.
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── METHOD B: MSAL OAuth (collapsed by default) ── */}
+        <div style={{border:"1px solid #e0e0e0"}}>
+          <button onClick={function(){setShowMsal(function(v){return !v;});}}
+            style={{width:"100%",padding:"12px 16px",background:"#f4f4f4",border:"none",cursor:"pointer",
+              display:"flex",alignItems:"center",gap:10,fontSize:13,fontWeight:600,color:"#525252",textAlign:"left"}}>
+            <span>{showMsal?"▲":"▼"}</span>
+            <span>☁ Alternative: Connect via Microsoft Account (requires Azure App registration)</span>
+          </button>
+          {showMsal&&(
+            <div style={{padding:"16px"}}>
+              {!odConnected ? (
+                <div>
+                  <div style={{fontSize:12,color:"#da1e28",marginBottom:10,padding:"8px 12px",background:"#fff1f1",border:"1px solid #ffd7d9"}}>
+                    ⚠ IBM accounts typically cannot register Azure apps. Use Method A above instead.
+                  </div>
+                  <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                    <input value={clientIdInput} onChange={function(e){setClientIdInput(e.target.value.trim());}}
+                      placeholder="Azure App Client ID (GUID)…"
+                      style={{flex:1,minWidth:240,padding:"8px 12px",border:"1px solid #8d8d8d",fontSize:13,fontFamily:"inherit"}}/>
+                    <button onClick={handleMsalConnect} disabled={connecting||!clientIdInput}
+                      style={{padding:"8px 16px",background:connecting||!clientIdInput?"#c6c6c6":"#0f62fe",color:"#fff",border:"none",
+                        cursor:connecting||!clientIdInput?"default":"pointer",fontWeight:600,fontSize:13}}>
+                      {connecting?"Connecting…":"Connect"}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12,flexWrap:"wrap"}}>
+                    <div style={{flex:1,fontSize:13,color:"#0e6027",fontWeight:600}}>✓ {odUser?.displayName} ({odUser?.mail||odUser?.userPrincipalName})</div>
+                    <button onClick={handleMsalDisconnect} style={{padding:"6px 12px",background:"none",border:"1px solid #da1e28",color:"#da1e28",cursor:"pointer",fontSize:12}}>Disconnect</button>
+                  </div>
+                  <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                    <button onClick={onOdLoad} disabled={odSyncing} style={{padding:"8px 16px",background:odSyncing?"#c6c6c6":"#0f62fe",color:"#fff",border:"none",cursor:odSyncing?"default":"pointer",fontWeight:600,fontSize:13}}>{odSyncing?"Loading…":"⬇ Load from OneDrive"}</button>
+                    <button onClick={onOdSave} disabled={odSyncing} style={{padding:"8px 16px",background:odSyncing?"#c6c6c6":"#0e6027",color:"#fff",border:"none",cursor:odSyncing?"default":"pointer",fontWeight:600,fontSize:13}}>{odSyncing?"Saving…":"⬆ Save to OneDrive"}</button>
+                  </div>
+                  {odLastSync&&<div style={{marginTop:8,fontSize:11,color:"#6f6f6f"}}>Last synced: {odLastSync}</div>}
+                </div>
               )}
             </div>
-            <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-              <input
-                value={clientIdInput}
-                onChange={function(e){setClientIdInput(e.target.value.trim());}}
-                placeholder="Paste Azure App Client ID (GUID)…"
-                style={{flex:1,minWidth:280,padding:"9px 12px",border:"1px solid #8d8d8d",fontSize:13,fontFamily:"inherit"}}/>
-              <button onClick={handleConnect} disabled={connecting||!clientIdInput}
-                style={{padding:"9px 18px",background:connecting||!clientIdInput?"#c6c6c6":"#0f62fe",
-                  color:"#fff",border:"none",cursor:connecting||!clientIdInput?"default":"pointer",fontWeight:600,fontSize:13}}>
-                {connecting?"Connecting…":"☁ Connect OneDrive"}
-              </button>
-            </div>
-          </>
-        ) : (
-          <>
-            {/* Connected state */}
-            <div style={{display:"flex",alignItems:"center",gap:16,flexWrap:"wrap",marginBottom:16}}>
-              <div style={{background:"#defbe6",border:"1px solid #a7f0ba",padding:"10px 16px",flex:1,minWidth:200}}>
-                <div style={{fontSize:13,fontWeight:700,color:"#0e6027"}}>✓ {odUser?.displayName||"Connected"}</div>
-                <div style={{fontSize:12,color:"#6f6f6f",marginTop:2}}>{odUser?.mail||odUser?.userPrincipalName||""}</div>
-                {odLastSync&&<div style={{fontSize:11,color:"#8d8d8d",marginTop:4}}>Last synced: {odLastSync}</div>}
-              </div>
-              <button onClick={handleDisconnect}
-                style={{padding:"8px 14px",background:"none",border:"1px solid #da1e28",color:"#da1e28",cursor:"pointer",fontSize:12,fontWeight:600}}>
-                Disconnect
-              </button>
-            </div>
-            {/* DB actions */}
-            <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
-              <button onClick={onLoadDB} disabled={odSyncing}
-                style={{padding:"9px 18px",background:odSyncing?"#c6c6c6":"#0f62fe",color:"#fff",border:"none",
-                  cursor:odSyncing?"default":"pointer",fontWeight:600,fontSize:13}}>
-                {odSyncing?"Syncing…":"⬇ Load Database from OneDrive"}
-              </button>
-              <button onClick={onSaveDB} disabled={odSyncing}
-                style={{padding:"9px 18px",background:odSyncing?"#c6c6c6":"#0e6027",color:"#fff",border:"none",
-                  cursor:odSyncing?"default":"pointer",fontWeight:600,fontSize:13}}>
-                {odSyncing?"Saving…":"⬆ Save Database to OneDrive"}
-              </button>
-            </div>
-            <div style={{marginTop:14,fontSize:12,color:"#6f6f6f",lineHeight:"1.6"}}>
-              <strong>Database file:</strong> <code>OneDrive / TimesheetManager / TimesheetManager_DB.json</code><br/>
-              Stores: Bill Rate reference, Calendar events, Name mappings, Manager profile
-            </div>
-          </>
-        )}
+          )}
+        </div>
+
       </div>
     </div>
   );
@@ -4907,12 +5080,17 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
   const[filterWBS,setFilterWBS]=useState("");      // WBS/project filter
   const[billRateDB,setBillRateDB]=useState([]);   // Bill rate reference database
   const[invoices,  setInvoices]  =useState([]);   // Parsed invoice PDFs (shared with InvoiceTab)
-  // ── OneDrive ──────────────────────────────────────────────────────────────
+  // ── OneDrive (MSAL) ───────────────────────────────────────────────────────
   const[odClientId, setOdClientId]=useState(()=>localStorage.getItem("od_client_id")||"");
   const[odConnected,setOdConnected]=useState(false);
   const[odUser,     setOdUser]    =useState(null);   // {displayName, mail}
   const[odSyncing,  setOdSyncing] =useState(false);
   const[odLastSync, setOdLastSync]=useState(()=>localStorage.getItem("od_last_sync")||"");
+  // ── Local Folder (File System Access API) ────────────────────────────────
+  const[lfsHandle,  setLfsHandle] =useState(null);   // FileSystemDirectoryHandle
+  const[lfsName,    setLfsName]   =useState(()=>localStorage.getItem("lfs_folder_name")||"");
+  const[lfsSyncing, setLfsSyncing]=useState(false);
+  const[lfsLastSync,setLfsLastSync]=useState(()=>localStorage.getItem("lfs_last_sync")||"");
   const[filterSource,setFilterSource]=useState("all"); // all|Both|IBM only|Clarity only
   const[confirmDelete,setConfirmDelete]=useState(null); // user id to delete
   const[emailLog,setEmailLog]=useState([]);
@@ -4924,6 +5102,48 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
   const[savedClarityRecs,setSavedClarityRecs]=useState([]); // persisted after import for Re-link dropdown
   const[relinkUserId,setRelinkUserId]=useState(null); // normalizedName of row showing re-link dropdown in records table
   const[manualMatches,setManualMatches]=useState({}); // {ibmNormName: clarityNormName} for re-linking in records table
+
+  // ── Local Folder: restore saved handle on mount ───────────────────────────
+  useEffect(function(){
+    if(!LFS.isSupported()) return;
+    LFS.restoreFolder().then(function(handle){
+      if(handle){ setLfsHandle(handle); setLfsName(localStorage.getItem("lfs_folder_name")||handle.name); }
+    }).catch(function(){});
+  },[]);
+
+  const lfsConnected = !!lfsHandle;
+
+  const lfsSaveDB = useCallback(async function(){
+    if(!lfsHandle) return;
+    setLfsSyncing(true);
+    try{
+      var db = {billRateDB, calendarEvents, manualMatches, mgrName, mgrEmail, mgrDept, savedAt:new Date().toISOString()};
+      await LFS.saveDatabase(lfsHandle, db);
+      var ts = new Date().toLocaleTimeString();
+      setLfsLastSync(ts); localStorage.setItem("lfs_last_sync", ts);
+      showToast("✓ Database saved to "+lfsHandle.name);
+    }catch(e){ showToast("Save failed: "+e.message,"error"); }
+    setLfsSyncing(false);
+  },[lfsHandle, billRateDB, calendarEvents, manualMatches, mgrName, mgrEmail, mgrDept]);
+
+  const lfsLoadDB = useCallback(async function(){
+    if(!lfsHandle) return;
+    setLfsSyncing(true);
+    try{
+      var db = await LFS.loadDatabase(lfsHandle);
+      if(!db){ showToast("No database file found in this folder yet — save one first","warn"); setLfsSyncing(false); return; }
+      if(db.billRateDB)     setBillRateDB(db.billRateDB);
+      if(db.calendarEvents) setCalendarEvents(db.calendarEvents);
+      if(db.manualMatches)  setManualMatches(db.manualMatches);
+      if(db.mgrName)        setMgrName(db.mgrName);
+      if(db.mgrEmail)       setMgrEmail(db.mgrEmail);
+      if(db.mgrDept)        setMgrDept(db.mgrDept);
+      var ts = new Date().toLocaleTimeString();
+      setLfsLastSync(ts); localStorage.setItem("lfs_last_sync", ts);
+      showToast("✓ Database loaded from "+lfsHandle.name);
+    }catch(e){ showToast("Load failed: "+e.message,"error"); }
+    setLfsSyncing(false);
+  },[lfsHandle]);
 
   // ── OneDrive: re-init MSAL on mount if clientId already saved ────────────────
   useEffect(function(){
@@ -5809,11 +6029,14 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
       {activeTab==="profile"&&(
         <div style={{padding:"28px",maxWidth:800}}>
           <OneDrivePanel
+            lfsHandle={lfsHandle} setLfsHandle={setLfsHandle} setLfsName={setLfsName}
+            lfsSyncing={lfsSyncing} lfsLastSync={lfsLastSync}
+            onLfsSave={lfsSaveDB} onLfsLoad={lfsLoadDB}
             odClientId={odClientId} setOdClientId={setOdClientId}
             odConnected={odConnected} setOdConnected={setOdConnected}
             odUser={odUser} setOdUser={setOdUser}
             odSyncing={odSyncing} odLastSync={odLastSync}
-            onSaveDB={odSaveDB} onLoadDB={odLoadDB}
+            onOdSave={odSaveDB} onOdLoad={odLoadDB}
             showToast={showToast}/>
           <ChangePasswordPanel session={session}/>
           <div style={{background:"#fff",border:`1px solid ${IBM.gray20}`,marginBottom:20}}>
@@ -5841,7 +6064,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
         </div>
       )}
 
-      {showImport&&<ImportModal onImport={handleImport} onClose={()=>setShowImport(false)} odConnected={odConnected}/>}
+      {showImport&&<ImportModal onImport={handleImport} onClose={()=>setShowImport(false)} odConnected={odConnected} lfsHandle={lfsHandle}/>}
 
       {/* Employee detail panel — receives userId so it always reads live data */}
       {detailUserId&&(

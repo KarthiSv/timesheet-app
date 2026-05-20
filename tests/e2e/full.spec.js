@@ -3,10 +3,10 @@ const { test, expect } = require('@playwright/test');
 const path = require('path');
 const fs = require('fs');
 
-const BASE = 'http://localhost:4173';
-const IBM_FILE_1 = '/tmp/ibm_test_main.xlsx';
-const IBM_FILE_2 = '/tmp/ibm_test_sheet1.xlsx';
-const CLARITY_FILE = '/tmp/clarity_test.xlsx';
+const BASE = 'http://localhost:5176';
+const IBM_FILE_1 = 'Inputs/March Labor claim only details RAQFN v2.0.xlsx';
+const IBM_FILE_2 = 'Inputs/March Labor claim only details RATT8 v2.0.xlsx';
+const CLARITY_FILE = 'Inputs/CORP_AML_FCU_QA Resources_Mar 2026 1st and 2nd Cycle Actual hours v2.0.xls';
 
 // Helper: login as manager
 async function loginAsManager(page) {

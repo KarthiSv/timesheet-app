@@ -185,7 +185,7 @@ function simulateHandleImport(data) {
       scheduled: r.scheduledHours || 0,
       entered: r.actualHours || 0,
       lastEntry: r.periods && r.periods.length ? r.periods[r.periods.length-1] : null,
-      projects: r.workitems ? r.workitems.slice(0,3).map(function(w,i){ return {code:"WI-"+(i+1), name:w}; }) : [],
+      projects: r.workitems ? r.workitems.filter(function(w){ return w; }).slice(0,3).map(function(w,i){ return {code:"WI-"+(i+1), name:String(w||"")}; }) : [],
       weeklyBreakdown: r.weeklyBreakdown || [],
       clarityPeriods: r.clarityPeriods || r.periods || [],
       monthlyHours: r.monthlyHours || {},
