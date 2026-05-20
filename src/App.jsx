@@ -1,6 +1,7 @@
-import React, { useState, useRef, useMemo, useEffect } from "react";
+import React, { useState, useRef, useMemo, useEffect, useCallback } from "react";
 import * as XLSX from "xlsx";
 import * as pdfjsLib from "pdfjs-dist";
+import * as OD from "./onedrive.js";
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from "recharts";
 
@@ -2341,7 +2342,7 @@ function mergeRecords(ibmRecords, clarityRecords, manualMatches) {
 
 
 // ─── IMPORT MODAL ─────────────────────────────────────────────────────────────
-function ImportModal({onImport, onClose}) {
+function ImportModal({onImport, onClose, odConnected}) {
   // IBM: array of {file, result, error, id}  — supports multiple files
   const[ibmFiles, setIbmFiles] = useState([]);
   const[clarityFiles, setClarityFiles] = useState([]); // array of {id,file,result,error,loading}
@@ -2349,6 +2350,7 @@ function ImportModal({onImport, onClose}) {
   const[manualMatches, setManualMatches] = useState({}); // {ibmNormName: clarityNormName}
   const[showManualUI, setShowManualUI] = useState(false);
   const[relinkUserId, setRelinkUserId] = useState(null); // ibmNormName of row currently showing relink dropdown
+  const[odPickMode, setOdPickMode] = useState(null); // "ibm" | "clarity" | null
   const ibmRef = useRef();
   const clarityRef = useRef();
 
@@ -2416,6 +2418,44 @@ function ImportModal({onImport, onClose}) {
 
   function removeClarityFile(id) {
     setClarityFiles(function(prev){ return prev.filter(function(f){ return f.id!==id; }); });
+  }
+
+  // OneDrive: read from ArrayBuffer directly (no FileReader needed)
+  function addIBMFromBuffer(buffer, name){
+    var fakeFile = new File([buffer], name, {type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+    var fileId = Date.now() + Math.random();
+    setIbmFiles(function(prev){ return prev.concat([{id:fileId, file:fakeFile, result:null, error:"", loading:true}]); });
+    try{
+      var wb = XLSX.read(buffer, {type:"array"});
+      var result = parseIBMFile(wb);
+      setIbmFiles(function(prev){ return prev.map(function(f){
+        return f.id===fileId ? {id:fileId, file:fakeFile, result:result.error?null:result, error:result.error||"", loading:false} : f;
+      }); });
+    }catch(ex){
+      setIbmFiles(function(prev){ return prev.map(function(f){
+        return f.id===fileId ? {id:fileId, file:fakeFile, result:null, error:"Could not parse: "+(ex.message||ex), loading:false} : f;
+      }); });
+    }
+    setOdPickMode(null);
+  }
+  function addClarityFromBuffer(buffer, name){
+    var fakeFile = new File([buffer], name, {type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+    var fileId = Date.now() + Math.random();
+    setClarityFiles(function(prev){ return prev.concat([{id:fileId, file:fakeFile, result:null, error:"", loading:true}]); });
+    try{
+      var wb = XLSX.read(buffer, {type:"array"});
+      var result = parseClarityFile(wb);
+      setClarityFiles(function(prev){ return prev.map(function(f){
+        if(f.id!==fileId) return f;
+        return result.error ? {id:fileId,file:fakeFile,result:null,error:result.error,loading:false}
+                            : {id:fileId,file:fakeFile,result:result,error:"",loading:false};
+      }); });
+    }catch(ex){
+      setClarityFiles(function(prev){ return prev.map(function(f){
+        return f.id===fileId ? {id:fileId, file:fakeFile, result:null, error:"Could not parse: "+(ex.message||ex), loading:false} : f;
+      }); });
+    }
+    setOdPickMode(null);
   }
 
   function mergeAllClarityRecords(filesList) {
@@ -2537,11 +2577,19 @@ function ImportModal({onImport, onClose}) {
             </div>
             <div style={{fontSize:10, opacity:0.85, marginTop:2}}>Sheet: "Labor claim only details" (fuzzy match) — upload multiple files for different WBS IDs</div>
           </div>
-          <button
-            onClick={function(){ ibmRef.current.click(); }}
-            style={{background:"rgba(255,255,255,0.15)", border:"1px solid rgba(255,255,255,0.4)", color:"#fff", padding:"5px 12px", cursor:"pointer", fontSize:11, fontWeight:600, whiteSpace:"nowrap"}}>
-            + Add File
-          </button>
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            <button
+              onClick={function(){ ibmRef.current.click(); }}
+              style={{background:"rgba(255,255,255,0.15)", border:"1px solid rgba(255,255,255,0.4)", color:"#fff", padding:"5px 12px", cursor:"pointer", fontSize:11, fontWeight:600, whiteSpace:"nowrap"}}>
+              + Add File
+            </button>
+            {odConnected&&(
+              <button onClick={function(){setOdPickMode("ibm");}}
+                style={{background:"rgba(255,255,255,0.25)",border:"1px solid rgba(255,255,255,0.6)",color:"#fff",padding:"5px 12px",cursor:"pointer",fontSize:11,fontWeight:600,whiteSpace:"nowrap"}}>
+                ☁ OneDrive
+              </button>
+            )}
+          </div>
         </div>
         <input ref={ibmRef} type="file" accept=".xlsx,.xls,.xlsm,.xlsb,.xltx,.xltm,.xlt,.csv,.ods,.tsv" multiple style={{display:"none"}}
           onChange={function(e){ Array.from(e.target.files).forEach(function(f){ readIBMFile(f); }); e.target.value=""; }}/>
@@ -2626,10 +2674,18 @@ function ImportModal({onImport, onClose}) {
             </div>
             <div style={{fontSize:10, opacity:0.85, marginTop:2}}>Sheet contains month name (e.g. CORP_AML_FCU_Feb2026_Actual hrs) — upload one file per month</div>
           </div>
-          <button onClick={function(){ clarityRef.current.click(); }}
-            style={{background:"rgba(255,255,255,0.15)", border:"1px solid rgba(255,255,255,0.4)", color:"#fff", padding:"5px 12px", cursor:"pointer", fontSize:11, fontWeight:600, whiteSpace:"nowrap"}}>
-            + Add File
-          </button>
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            <button onClick={function(){ clarityRef.current.click(); }}
+              style={{background:"rgba(255,255,255,0.15)", border:"1px solid rgba(255,255,255,0.4)", color:"#fff", padding:"5px 12px", cursor:"pointer", fontSize:11, fontWeight:600, whiteSpace:"nowrap"}}>
+              + Add File
+            </button>
+            {odConnected&&(
+              <button onClick={function(){setOdPickMode("clarity");}}
+                style={{background:"rgba(255,255,255,0.25)",border:"1px solid rgba(255,255,255,0.6)",color:"#fff",padding:"5px 12px",cursor:"pointer",fontSize:11,fontWeight:600,whiteSpace:"nowrap"}}>
+                ☁ OneDrive
+              </button>
+            )}
+          </div>
         </div>
         <input ref={clarityRef} type="file" accept=".xlsx,.xls,.xlsm,.xlsb,.xltx,.xltm,.xlt,.csv,.ods,.tsv" multiple style={{display:"none"}}
           onChange={function(e){ Array.from(e.target.files).forEach(function(f){ readClarityFile(f); }); e.target.value=""; }}/>
@@ -2695,11 +2751,20 @@ function ImportModal({onImport, onClose}) {
 
   return (
     <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(22,22,22,.82)",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center"}}>
+      {/* OneDrive file picker overlay (z-index 500, above import modal) */}
+      {odPickMode&&(
+        <OneDriveFilePicker
+          fileFilter={function(n){ return /\.(xlsx?|xls)$/i.test(n); }}
+          onPick={function(ab,name){ odPickMode==="ibm" ? addIBMFromBuffer(ab,name) : addClarityFromBuffer(ab,name); }}
+          onClose={function(){setOdPickMode(null);}}
+          showToast={function(m,t){ alert(m); }}
+        />
+      )}
       <div className="import-modal" style={{background:"#fff",width:"min(900px,97vw)",maxHeight:"92vh",overflowY:"auto",fontFamily:FF_SANS,border:"1px solid #e0e0e0",display:"flex",flexDirection:"column"}}>
         {/* Header */}
         <div style={{background:IBM.gray100,color:"#fff",padding:"16px 24px",display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
           <div>
-            <div style={{fontSize:16,fontWeight:600}}>Import Data</div>
+            <div style={{fontSize:16,fontWeight:600}}>Import Data {odConnected&&<span style={{background:"#0062cc",color:"#fff",fontSize:10,padding:"1px 7px",marginLeft:8,fontWeight:600}}>☁ OneDrive Active</span>}</div>
             <div style={{fontSize:11,color:IBM.gray30,marginTop:3}}>Upload multiple IBM files (one per WBS ID) and one Clarity file — people are matched by name automatically</div>
           </div>
           <button onClick={onClose} style={{background:"none",border:"1px solid "+IBM.gray70,color:IBM.gray30,fontSize:13,cursor:"pointer",padding:"5px 14px"}}>&#x2715; Close</button>
@@ -4181,6 +4246,234 @@ function InvoiceTab({users, billRateDB, invoices, setInvoices, showToast}){
   );
 }
 
+// ─── ONEDRIVE FILE PICKER ─────────────────────────────────────────────────────
+// Modal file browser that lets the user pick an Excel/PDF file from OneDrive.
+// Calls onPick(arrayBuffer, fileName) when a file is selected.
+function OneDriveFilePicker({ onPick, onClose, fileFilter, showToast }){
+  var [items,     setItems]    = useState([]);
+  var [loading,   setLoading]  = useState(true);
+  var [folderId,  setFolderId] = useState("root");
+  var [breadcrumb,setBreadcrumb]=useState([{id:"root",name:"My Files"}]);
+  var [picking,   setPicking]  = useState(false);
+
+  useEffect(function(){
+    setLoading(true);
+    OD.listFolder(folderId).then(function(list){
+      setItems(list);
+      setLoading(false);
+    }).catch(function(e){
+      showToast("Cannot read folder: "+e.message,"error");
+      setLoading(false);
+    });
+  },[folderId]);
+
+  function openFolder(item){
+    setBreadcrumb(function(b){ return [...b, {id:item.id, name:item.name}]; });
+    setFolderId(item.id);
+  }
+  function navTo(crumb, idx){
+    setBreadcrumb(function(b){ return b.slice(0,idx+1); });
+    setFolderId(crumb.id);
+  }
+  async function pickFile(item){
+    setPicking(true);
+    try{
+      var ab = await OD.downloadFile(item.id);
+      onPick(ab, item.name);
+    }catch(e){
+      showToast("Download failed: "+e.message,"error");
+    }
+    setPicking(false);
+  }
+
+  var displayed = items.filter(function(i){
+    if(i.folder) return true; // always show folders
+    if(!fileFilter) return true;
+    return fileFilter(i.name);
+  });
+
+  return(
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.55)",zIndex:500,display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <div style={{background:"#fff",width:620,maxHeight:"80vh",display:"flex",flexDirection:"column",boxShadow:"0 8px 40px rgba(0,0,0,0.3)"}}>
+        {/* Header */}
+        <div style={{background:"#0062cc",color:"#fff",padding:"14px 20px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <span style={{fontSize:20}}>☁</span>
+            <span style={{fontWeight:700,fontSize:15}}>OneDrive — Pick a File</span>
+          </div>
+          <button onClick={onClose} style={{background:"none",border:"none",color:"#fff",fontSize:20,cursor:"pointer",lineHeight:1}}>✕</button>
+        </div>
+        {/* Breadcrumb */}
+        <div style={{padding:"8px 16px",borderBottom:"1px solid #e0e0e0",display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",fontSize:13,background:"#f4f4f4"}}>
+          {breadcrumb.map(function(crumb,idx){
+            var isLast = idx===breadcrumb.length-1;
+            return(
+              <span key={crumb.id} style={{display:"flex",alignItems:"center",gap:6}}>
+                {idx>0&&<span style={{color:"#8d8d8d"}}>/</span>}
+                <button onClick={function(){if(!isLast)navTo(crumb,idx);}}
+                  style={{background:"none",border:"none",cursor:isLast?"default":"pointer",
+                    color:isLast?"#161616":"#0f62fe",fontWeight:isLast?600:400,padding:0,fontSize:13}}>
+                  {crumb.name}
+                </button>
+              </span>
+            );
+          })}
+        </div>
+        {/* File list */}
+        <div style={{flex:1,overflowY:"auto",padding:"8px 0"}}>
+          {loading ? (
+            <div style={{padding:40,textAlign:"center",color:"#6f6f6f",fontSize:13}}>Loading…</div>
+          ) : displayed.length===0 ? (
+            <div style={{padding:40,textAlign:"center",color:"#6f6f6f",fontSize:13}}>No files found in this folder.</div>
+          ) : displayed.map(function(item){
+            var isFolder = !!item.folder;
+            var ext = (item.name||"").split(".").pop().toLowerCase();
+            var icon = isFolder ? "📁" : /xlsx?/.test(ext) ? "📊" : /pdf/.test(ext) ? "📄" : "📎";
+            var modified = item.lastModifiedDateTime ? new Date(item.lastModifiedDateTime).toLocaleDateString() : "";
+            return(
+              <div key={item.id}
+                onClick={function(){ isFolder ? openFolder(item) : pickFile(item); }}
+                style={{display:"flex",alignItems:"center",gap:12,padding:"9px 20px",cursor:"pointer",
+                  borderBottom:"1px solid #f0f0f0",
+                  background: picking?"#f4f4f4":"#fff"}}
+                onMouseEnter={function(e){e.currentTarget.style.background="#edf5ff";}}
+                onMouseLeave={function(e){e.currentTarget.style.background="#fff";}}>
+                <span style={{fontSize:18,flexShrink:0}}>{icon}</span>
+                <span style={{flex:1,fontSize:13,fontWeight:isFolder?600:400,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{item.name}</span>
+                {!isFolder&&<span style={{fontSize:11,color:"#6f6f6f",flexShrink:0}}>{modified}</span>}
+                {isFolder&&<span style={{fontSize:11,color:"#6f6f6f",flexShrink:0}}>▶</span>}
+              </div>
+            );
+          })}
+        </div>
+        {picking&&<div style={{padding:"10px 20px",background:"#edf5ff",textAlign:"center",fontSize:13,color:"#0043ce"}}>Downloading…</div>}
+      </div>
+    </div>
+  );
+}
+
+// ─── ONEDRIVE SETTINGS PANEL ───────────────────────────────────────────────────
+// Displayed inside the Profile tab.
+function OneDrivePanel({ odClientId, setOdClientId, odConnected, setOdConnected, odUser, setOdUser,
+                          odSyncing, odLastSync, onSaveDB, onLoadDB, showToast }){
+  var [showSetup, setShowSetup] = useState(false);
+  var [clientIdInput, setClientIdInput] = useState(odClientId||"");
+  var [connecting, setConnecting] = useState(false);
+
+  async function handleConnect(){
+    if(!clientIdInput.trim()){ showToast("Paste your Azure Client ID first","error"); return; }
+    setConnecting(true);
+    try{
+      await OD.initMsal(clientIdInput.trim());
+      var account = await OD.signIn();
+      var me = await OD.getMe();
+      localStorage.setItem("od_client_id", clientIdInput.trim());
+      setOdClientId(clientIdInput.trim());
+      setOdConnected(true);
+      setOdUser(me);
+      showToast("✓ Connected to OneDrive as "+me.displayName);
+    }catch(e){
+      showToast("Connection failed: "+e.message,"error");
+    }
+    setConnecting(false);
+  }
+
+  async function handleDisconnect(){
+    try{ await OD.signOut(); }catch(e){}
+    setOdConnected(false); setOdUser(null);
+    localStorage.removeItem("od_client_id");
+    localStorage.removeItem("od_last_sync");
+    setOdClientId("");
+    setClientIdInput("");
+    showToast("Disconnected from OneDrive");
+  }
+
+  return(
+    <div style={{background:"#fff",border:"1px solid #e0e0e0",marginBottom:20}}>
+      {/* Header */}
+      <div style={{background:"#0062cc",color:"#fff",padding:"14px 20px",display:"flex",alignItems:"center",gap:12}}>
+        <span style={{fontSize:22}}>☁</span>
+        <div>
+          <div style={{fontWeight:700,fontSize:14}}>OneDrive Integration</div>
+          <div style={{fontSize:12,opacity:0.85}}>Connect your Microsoft 365 account to use OneDrive as source & database</div>
+        </div>
+        {odConnected&&<div style={{marginLeft:"auto",background:"#24a148",padding:"3px 10px",fontSize:11,fontWeight:700,letterSpacing:"0.05em"}}>● CONNECTED</div>}
+      </div>
+
+      <div style={{padding:"20px 24px"}}>
+        {!odConnected ? (
+          <>
+            {/* Setup guide */}
+            <div style={{background:"#edf5ff",border:"1px solid #a6c8ff",padding:"14px 16px",marginBottom:16,fontSize:13}}>
+              <div style={{fontWeight:700,color:"#0043ce",marginBottom:6}}>🔑 One-time setup: Get your Azure Client ID (5 min)</div>
+              <button onClick={function(){setShowSetup(function(v){return !v;})}}
+                style={{background:"none",border:"none",color:"#0f62fe",cursor:"pointer",fontSize:13,padding:0,textDecoration:"underline"}}>
+                {showSetup?"▲ Hide instructions":"▼ Show step-by-step instructions"}
+              </button>
+              {showSetup&&(
+                <ol style={{marginTop:10,paddingLeft:18,lineHeight:"1.9",color:"#161616"}}>
+                  <li>Go to <strong>portal.azure.com</strong> and sign in with your work account</li>
+                  <li>Search <em>"App registrations"</em> → click <strong>New registration</strong></li>
+                  <li>Name: <em>Timesheet Manager</em> — Account types: <strong>"Accounts in any organizational directory and personal Microsoft accounts"</strong></li>
+                  <li>Under <em>Redirect URI</em>: select <strong>Single-page application (SPA)</strong> and enter: <code style={{background:"#f4f4f4",padding:"1px 5px"}}>{window.location.origin}</code></li>
+                  <li>Click <strong>Register</strong> — copy the <strong>Application (client) ID</strong> (a GUID)</li>
+                  <li>Go to <em>API permissions</em> → Add → Microsoft Graph → Delegated → add: <code>Files.ReadWrite</code> and <code>User.Read</code></li>
+                  <li>Click <strong>Grant admin consent</strong> (or ask your IT admin to approve)</li>
+                  <li>Paste the Client ID below and click Connect</li>
+                </ol>
+              )}
+            </div>
+            <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+              <input
+                value={clientIdInput}
+                onChange={function(e){setClientIdInput(e.target.value.trim());}}
+                placeholder="Paste Azure App Client ID (GUID)…"
+                style={{flex:1,minWidth:280,padding:"9px 12px",border:"1px solid #8d8d8d",fontSize:13,fontFamily:"inherit"}}/>
+              <button onClick={handleConnect} disabled={connecting||!clientIdInput}
+                style={{padding:"9px 18px",background:connecting||!clientIdInput?"#c6c6c6":"#0f62fe",
+                  color:"#fff",border:"none",cursor:connecting||!clientIdInput?"default":"pointer",fontWeight:600,fontSize:13}}>
+                {connecting?"Connecting…":"☁ Connect OneDrive"}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            {/* Connected state */}
+            <div style={{display:"flex",alignItems:"center",gap:16,flexWrap:"wrap",marginBottom:16}}>
+              <div style={{background:"#defbe6",border:"1px solid #a7f0ba",padding:"10px 16px",flex:1,minWidth:200}}>
+                <div style={{fontSize:13,fontWeight:700,color:"#0e6027"}}>✓ {odUser?.displayName||"Connected"}</div>
+                <div style={{fontSize:12,color:"#6f6f6f",marginTop:2}}>{odUser?.mail||odUser?.userPrincipalName||""}</div>
+                {odLastSync&&<div style={{fontSize:11,color:"#8d8d8d",marginTop:4}}>Last synced: {odLastSync}</div>}
+              </div>
+              <button onClick={handleDisconnect}
+                style={{padding:"8px 14px",background:"none",border:"1px solid #da1e28",color:"#da1e28",cursor:"pointer",fontSize:12,fontWeight:600}}>
+                Disconnect
+              </button>
+            </div>
+            {/* DB actions */}
+            <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+              <button onClick={onLoadDB} disabled={odSyncing}
+                style={{padding:"9px 18px",background:odSyncing?"#c6c6c6":"#0f62fe",color:"#fff",border:"none",
+                  cursor:odSyncing?"default":"pointer",fontWeight:600,fontSize:13}}>
+                {odSyncing?"Syncing…":"⬇ Load Database from OneDrive"}
+              </button>
+              <button onClick={onSaveDB} disabled={odSyncing}
+                style={{padding:"9px 18px",background:odSyncing?"#c6c6c6":"#0e6027",color:"#fff",border:"none",
+                  cursor:odSyncing?"default":"pointer",fontWeight:600,fontSize:13}}>
+                {odSyncing?"Saving…":"⬆ Save Database to OneDrive"}
+              </button>
+            </div>
+            <div style={{marginTop:14,fontSize:12,color:"#6f6f6f",lineHeight:"1.6"}}>
+              <strong>Database file:</strong> <code>OneDrive / TimesheetManager / TimesheetManager_DB.json</code><br/>
+              Stores: Bill Rate reference, Calendar events, Name mappings, Manager profile
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── BILL RATE VALIDATION TAB ─────────────────────────────────────────────────
 // Parses a Labor Claim Details XLSX (same 67-col schema as IBM timesheet files)
 // and builds an editable reference table of BillingCode → BillingRate mappings.
@@ -4614,6 +4907,12 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
   const[filterWBS,setFilterWBS]=useState("");      // WBS/project filter
   const[billRateDB,setBillRateDB]=useState([]);   // Bill rate reference database
   const[invoices,  setInvoices]  =useState([]);   // Parsed invoice PDFs (shared with InvoiceTab)
+  // ── OneDrive ──────────────────────────────────────────────────────────────
+  const[odClientId, setOdClientId]=useState(()=>localStorage.getItem("od_client_id")||"");
+  const[odConnected,setOdConnected]=useState(false);
+  const[odUser,     setOdUser]    =useState(null);   // {displayName, mail}
+  const[odSyncing,  setOdSyncing] =useState(false);
+  const[odLastSync, setOdLastSync]=useState(()=>localStorage.getItem("od_last_sync")||"");
   const[filterSource,setFilterSource]=useState("all"); // all|Both|IBM only|Clarity only
   const[confirmDelete,setConfirmDelete]=useState(null); // user id to delete
   const[emailLog,setEmailLog]=useState([]);
@@ -4625,6 +4924,67 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
   const[savedClarityRecs,setSavedClarityRecs]=useState([]); // persisted after import for Re-link dropdown
   const[relinkUserId,setRelinkUserId]=useState(null); // normalizedName of row showing re-link dropdown in records table
   const[manualMatches,setManualMatches]=useState({}); // {ibmNormName: clarityNormName} for re-linking in records table
+
+  // ── OneDrive: re-init MSAL on mount if clientId already saved ────────────────
+  useEffect(function(){
+    var saved = localStorage.getItem("od_client_id");
+    if(!saved) return;
+    OD.initMsal(saved).then(function(){
+      var account = OD.getAccount();
+      if(account){
+        setOdConnected(true);
+        OD.getMe().then(function(me){ setOdUser(me); }).catch(function(){});
+      }
+    }).catch(function(){});
+  },[]);
+
+  // ── OneDrive: save database helper ───────────────────────────────────────────
+  const odSaveDB = useCallback(async function(extra){
+    if(!odConnected) return;
+    setOdSyncing(true);
+    try{
+      var db = Object.assign({
+        billRateDB,
+        calendarEvents,
+        manualMatches,
+        mgrName, mgrEmail, mgrDept,
+        savedAt: new Date().toISOString(),
+      }, extra||{});
+      await OD.saveDatabase(db);
+      var ts = new Date().toLocaleTimeString();
+      setOdLastSync(ts);
+      localStorage.setItem("od_last_sync", ts);
+    }catch(e){
+      showToast("OneDrive save failed: "+e.message,"error");
+    }
+    setOdSyncing(false);
+  },[odConnected, billRateDB, calendarEvents, manualMatches, mgrName, mgrEmail, mgrDept]);
+
+  // ── OneDrive: load database helper ───────────────────────────────────────────
+  const odLoadDB = useCallback(async function(){
+    if(!odConnected) return;
+    setOdSyncing(true);
+    try{
+      var db = await OD.loadDatabase();
+      if(db.billRateDB)    setBillRateDB(db.billRateDB);
+      if(db.calendarEvents)setCalendarEvents(db.calendarEvents);
+      if(db.manualMatches) setManualMatches(db.manualMatches);
+      if(db.mgrName)       setMgrName(db.mgrName);
+      if(db.mgrEmail)      setMgrEmail(db.mgrEmail);
+      if(db.mgrDept)       setMgrDept(db.mgrDept);
+      var ts = new Date().toLocaleTimeString();
+      setOdLastSync(ts);
+      localStorage.setItem("od_last_sync", ts);
+      showToast("✓ Database loaded from OneDrive");
+    }catch(e){
+      if(e.message.includes("404")||e.message.includes("itemNotFound")){
+        showToast("No database file found on OneDrive yet — save one first","warn");
+      } else {
+        showToast("OneDrive load failed: "+e.message,"error");
+      }
+    }
+    setOdSyncing(false);
+  },[odConnected]);
 
   const periodLabel=(PERIODS.find(p=>p.value===selPeriod)||{label:selPeriod}).label;
   const monthLabel=`${selMonth} ${selYear}`;
@@ -5448,6 +5808,13 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
 
       {activeTab==="profile"&&(
         <div style={{padding:"28px",maxWidth:800}}>
+          <OneDrivePanel
+            odClientId={odClientId} setOdClientId={setOdClientId}
+            odConnected={odConnected} setOdConnected={setOdConnected}
+            odUser={odUser} setOdUser={setOdUser}
+            odSyncing={odSyncing} odLastSync={odLastSync}
+            onSaveDB={odSaveDB} onLoadDB={odLoadDB}
+            showToast={showToast}/>
           <ChangePasswordPanel session={session}/>
           <div style={{background:"#fff",border:`1px solid ${IBM.gray20}`,marginBottom:20}}>
             <div style={{background:IBM.gray100,color:"#fff",padding:"14px 20px",display:"flex",alignItems:"center",gap:12}}>
@@ -5474,7 +5841,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
         </div>
       )}
 
-      {showImport&&<ImportModal onImport={handleImport} onClose={()=>setShowImport(false)}/>}
+      {showImport&&<ImportModal onImport={handleImport} onClose={()=>setShowImport(false)} odConnected={odConnected}/>}
 
       {/* Employee detail panel — receives userId so it always reads live data */}
       {detailUserId&&(
