@@ -4716,17 +4716,19 @@ function validateUserBillRate(u, db){
   return {status:"mismatch", refs:matches, actual:u.billingRate};
 }
 
-function BillRateTab({users, billRateDB, setBillRateDB, showToast}){
+function BillRateTab({users, billRateDB, setBillRateDB, expectedBillRateDB, setExpectedBillRateDB, showToast}){
   // XLSX is available via top-level ES module import
-  var [loadedFiles, setLoadedFiles]     = useState([]);
-  var [editingId,   setEditingId]       = useState(null);
-  var [editDraft,   setEditDraft]       = useState({});
-  var [showAdd,     setShowAdd]         = useState(false);
-  var [newRow,      setNewRow]          = useState({wbsId:"",billingCode:"",billingRate:"",hireType:"",resourceType:"",country:""});
-  var [filterCode,  setFilterCode]      = useState("");
-  var [filterWbs,   setFilterWbs]       = useState("");
-  var [dragOver,    setDragOver]        = useState(false);
-  var [valTab,      setValTab]          = useState("all"); // all|mismatch|unknown|match
+  var [loadedFiles,       setLoadedFiles]       = useState([]);
+  var [expectedFiles,     setExpectedFiles]     = useState([]);
+  var [editingId,         setEditingId]         = useState(null);
+  var [editDraft,         setEditDraft]         = useState({});
+  var [showAdd,           setShowAdd]           = useState(false);
+  var [newRow,            setNewRow]            = useState({wbsId:"",billingCode:"",billingRate:"",hireType:"",resourceType:"",country:""});
+  var [filterCode,        setFilterCode]        = useState("");
+  var [filterWbs,         setFilterWbs]         = useState("");
+  var [dragOver,          setDragOver]          = useState(false);
+  var [dragOverExp,       setDragOverExp]       = useState(false);
+  var [valTab,            setValTab]            = useState("all"); // all|mismatch|unknown|match
 
   var filteredDB = useMemo(function(){
     var q = filterCode.toLowerCase(), w = filterWbs.toLowerCase();
@@ -4774,6 +4776,26 @@ function BillRateTab({users, billRateDB, setBillRateDB, showToast}){
       });
       setLoadedFiles(function(p){ return p.concat(arr.map(function(f){ return {name:f.name,rows:all.length}; })); });
       showToast("✓ Loaded "+arr.length+" file(s) — "+added+" new entries added");
+    }).catch(function(err){ showToast("Error reading file: "+err.message,"error"); });
+  }
+
+  function handleExpectedFileDrop(files){
+    var arr = Array.from(files).filter(function(f){ return f.name.endsWith(".xlsx")||f.name.endsWith(".xls"); });
+    if(!arr.length){ showToast("Please upload .xlsx files","error"); return; }
+    var promises = arr.map(function(f){ return parseBillRateFile(f); });
+    Promise.all(promises).then(function(results){
+      var all = [].concat.apply([], results);
+      var added = 0;
+      setExpectedBillRateDB(function(prev){
+        var next = prev.slice();
+        all.forEach(function(entry){
+          var dup = next.find(function(e){ return e.wbsId===entry.wbsId&&e.billingCode===entry.billingCode&&e.hireType===entry.hireType&&e.resourceType===entry.resourceType&&e.country===entry.country; });
+          if(!dup){ next.push(entry); added++; }
+        });
+        return next;
+      });
+      setExpectedFiles(function(p){ return p.concat(arr.map(function(f){ return {name:f.name}; })); });
+      showToast("✓ Expected: loaded "+arr.length+" file(s) — "+added+" new entries");
     }).catch(function(err){ showToast("Error reading file: "+err.message,"error"); });
   }
 
@@ -4829,33 +4851,104 @@ function BillRateTab({users, billRateDB, setBillRateDB, showToast}){
           <div style={{fontSize:13,color:IBM.gray60,marginTop:3}}>Load Labor Claim Detail files as your billing reference database — edit, validate, and export</div>
         </div>
         <div style={{display:"flex",gap:8}}>
-          {billRateDB.length>0&&<button onClick={handleExport} style={{padding:"8px 16px",background:"#0e6027",color:"#fff",border:"none",cursor:"pointer",fontSize:13,fontWeight:600}}>⬇ Export Reference (.xlsx)</button>}
-          <button onClick={function(){ setBillRateDB([]); setLoadedFiles([]); showToast("Reference cleared"); }} style={{padding:"8px 14px",background:"none",border:"1px solid "+IBM.red40,color:IBM.red60,cursor:"pointer",fontSize:12}} disabled={!billRateDB.length}>🗑 Clear All</button>
+          {billRateDB.length>0&&<button onClick={handleExport} style={{padding:"8px 16px",background:"#0e6027",color:"#fff",border:"none",cursor:"pointer",fontSize:13,fontWeight:600}}>⬇ Export Source (.xlsx)</button>}
+          <button onClick={function(){ setBillRateDB([]); setLoadedFiles([]); setExpectedBillRateDB([]); setExpectedFiles([]); showToast("All bill rate data cleared"); }} style={{padding:"8px 14px",background:"none",border:"1px solid "+IBM.red60,color:IBM.red60,cursor:"pointer",fontSize:12}} disabled={!billRateDB.length&&!expectedBillRateDB.length}>🗑 Clear All</button>
         </div>
       </div>
 
-      {/* ── Upload zone ── */}
-      <div
-        onDragOver={function(e){e.preventDefault();setDragOver(true);}}
-        onDragLeave={function(){setDragOver(false);}}
-        onDrop={function(e){e.preventDefault();setDragOver(false);handleFileDrop(e.dataTransfer.files);}}
-        style={{border:"2px dashed "+(dragOver?IBM.blue60:IBM.gray30),borderRadius:4,padding:"20px 24px",marginBottom:20,background:dragOver?IBM.blue10:"#fafafa",textAlign:"center",cursor:"pointer",transition:"all 0.15s"}}
-        onClick={function(){ document.getElementById("br-file-input").click(); }}>
-        <div style={{fontSize:14,color:dragOver?IBM.blue60:IBM.gray70,fontWeight:600}}>📂 Drop Labor Claim Details (.xlsx) here or click to browse</div>
-        <div style={{fontSize:12,color:IBM.gray50,marginTop:4}}>Supports multiple files — RATT8, RAVDD, RAT8W, etc.</div>
-        <input id="br-file-input" type="file" accept=".xlsx,.xls" multiple style={{display:"none"}}
-          onChange={function(e){ handleFileDrop(e.target.files); e.target.value=""; }}/>
+      {/* ── Upload zones: Source + Expected ── */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:20}}>
+
+        {/* Source (actual) */}
+        <div>
+          <div style={{fontSize:12,fontWeight:700,color:IBM.gray70,marginBottom:6,textTransform:"uppercase",letterSpacing:"0.5px"}}>
+            📂 Source  <span style={{fontSize:10,fontWeight:400,color:IBM.gray50,textTransform:"none"}}>— actual Labor Claim Detail rates</span>
+          </div>
+          <div
+            onDragOver={function(e){e.preventDefault();setDragOver(true);}}
+            onDragLeave={function(){setDragOver(false);}}
+            onDrop={function(e){e.preventDefault();setDragOver(false);handleFileDrop(e.dataTransfer.files);}}
+            style={{border:"2px dashed "+(dragOver?IBM.blue60:IBM.gray30),borderRadius:4,padding:"18px 16px",background:dragOver?IBM.blue10:"#fafafa",textAlign:"center",cursor:"pointer",transition:"all 0.15s"}}
+            onClick={function(){ document.getElementById("br-file-input").click(); }}>
+            <div style={{fontSize:13,color:dragOver?IBM.blue60:IBM.gray70,fontWeight:600}}>Drop .xlsx here or click to browse</div>
+            <div style={{fontSize:11,color:IBM.gray50,marginTop:3}}>RATT8, RAVDD, RAT8W, etc.</div>
+            <input id="br-file-input" type="file" accept=".xlsx,.xls" multiple style={{display:"none"}}
+              onChange={function(e){ handleFileDrop(e.target.files); e.target.value=""; }}/>
+          </div>
+          {loadedFiles.length>0&&(
+            <div style={{marginTop:8,display:"flex",flexWrap:"wrap",gap:4,alignItems:"center"}}>
+              {loadedFiles.map(function(f,i){ return (
+                <span key={i} style={{background:IBM.blue10,color:IBM.blue60,border:"1px solid "+IBM.blue20,padding:"2px 8px",fontSize:11,fontWeight:600}}>📄 {f.name}</span>
+              );})}
+              <span style={{fontSize:11,color:IBM.gray50}}>{billRateDB.length} entries</span>
+            </div>
+          )}
+          {billRateDB.length>0&&loadedFiles.length===0&&(
+            <div style={{marginTop:8,display:"flex",alignItems:"center",gap:6}}>
+              <span style={{fontSize:11,color:IBM.green50,fontWeight:600}}>✓ {billRateDB.length} entries loaded (from saved session)</span>
+              <button onClick={function(){ setBillRateDB([]); showToast("Source data cleared"); }} style={{fontSize:10,padding:"1px 7px",border:"1px solid "+IBM.red60,background:"none",color:IBM.red60,cursor:"pointer"}}>Clear</button>
+            </div>
+          )}
+        </div>
+
+        {/* Expected */}
+        <div>
+          <div style={{fontSize:12,fontWeight:700,color:IBM.gray70,marginBottom:6,textTransform:"uppercase",letterSpacing:"0.5px"}}>
+            🎯 Expected  <span style={{fontSize:10,fontWeight:400,color:IBM.gray50,textTransform:"none"}}>— budgeted / target bill rates</span>
+          </div>
+          <div
+            onDragOver={function(e){e.preventDefault();setDragOverExp(true);}}
+            onDragLeave={function(){setDragOverExp(false);}}
+            onDrop={function(e){e.preventDefault();setDragOverExp(false);handleExpectedFileDrop(e.dataTransfer.files);}}
+            style={{border:"2px dashed "+(dragOverExp?"#6929c4":IBM.gray30),borderRadius:4,padding:"18px 16px",background:dragOverExp?"#f6f2ff":"#fafafa",textAlign:"center",cursor:"pointer",transition:"all 0.15s"}}
+            onClick={function(){ document.getElementById("br-exp-input").click(); }}>
+            <div style={{fontSize:13,color:dragOverExp?"#6929c4":IBM.gray70,fontWeight:600}}>Drop expected rate file here or click to browse</div>
+            <div style={{fontSize:11,color:IBM.gray50,marginTop:3}}>Same format as source — budget or contract rates</div>
+            <input id="br-exp-input" type="file" accept=".xlsx,.xls" multiple style={{display:"none"}}
+              onChange={function(e){ handleExpectedFileDrop(e.target.files); e.target.value=""; }}/>
+          </div>
+          {expectedFiles.length>0&&(
+            <div style={{marginTop:8,display:"flex",flexWrap:"wrap",gap:4,alignItems:"center"}}>
+              {expectedFiles.map(function(f,i){ return (
+                <span key={i} style={{background:"#f6f2ff",color:"#6929c4",border:"1px solid #d4bbff",padding:"2px 8px",fontSize:11,fontWeight:600}}>📄 {f.name}</span>
+              );})}
+              <span style={{fontSize:11,color:IBM.gray50}}>{expectedBillRateDB.length} entries</span>
+            </div>
+          )}
+          {expectedBillRateDB.length>0&&expectedFiles.length===0&&(
+            <div style={{marginTop:8,display:"flex",alignItems:"center",gap:6}}>
+              <span style={{fontSize:11,color:"#6929c4",fontWeight:600}}>✓ {expectedBillRateDB.length} entries loaded (from saved session)</span>
+              <button onClick={function(){ setExpectedBillRateDB([]); showToast("Expected data cleared"); }} style={{fontSize:10,padding:"1px 7px",border:"1px solid "+IBM.red60,background:"none",color:IBM.red60,cursor:"pointer"}}>Clear</button>
+            </div>
+          )}
+        </div>
       </div>
 
-      {loadedFiles.length>0&&(
-        <div style={{marginBottom:16,display:"flex",flexWrap:"wrap",gap:6}}>
-          {loadedFiles.map(function(f,i){ return (
-            <span key={i} style={{background:IBM.blue10,color:IBM.blue60,border:"1px solid "+IBM.blue20,padding:"3px 10px",fontSize:11,fontWeight:600}}>
-              📄 {f.name}
-            </span>
-          );})}
-        </div>
-      )}
+      {/* Source vs Expected summary banner (shown when both loaded) */}
+      {billRateDB.length>0&&expectedBillRateDB.length>0&&(function(){
+        var srcCodes = new Set(billRateDB.map(function(r){ return r.billingCode; }));
+        var expCodes = new Set(expectedBillRateDB.map(function(r){ return r.billingCode; }));
+        var matched=0, rateOk=0, rateDiff=0, onlySrc=0, onlyExp=0;
+        srcCodes.forEach(function(code){
+          if(expCodes.has(code)){
+            matched++;
+            var s=billRateDB.find(function(r){return r.billingCode===code;})||{};
+            var x=expectedBillRateDB.find(function(r){return r.billingCode===code;})||{};
+            if(Math.abs(Number(s.billingRate)-Number(x.billingRate))<0.01) rateOk++; else rateDiff++;
+          } else { onlySrc++; }
+        });
+        expCodes.forEach(function(code){ if(!srcCodes.has(code)) onlyExp++; });
+        return (
+          <div style={{background:"#f6f2ff",border:"1px solid #d4bbff",borderRadius:4,padding:"10px 16px",marginBottom:20,display:"flex",flexWrap:"wrap",gap:16,alignItems:"center"}}>
+            <span style={{fontWeight:700,fontSize:12,color:"#6929c4"}}>🎯 Source vs Expected</span>
+            <span style={{fontSize:12,color:IBM.green50,fontWeight:600}}>✓ Rate match: {rateOk}</span>
+            <span style={{fontSize:12,color:IBM.red60,fontWeight:600}}>✗ Rate diff: {rateDiff}</span>
+            <span style={{fontSize:12,color:"#6929c4"}}>Codes in both: {matched}</span>
+            <span style={{fontSize:12,color:IBM.gray60}}>Source only: {onlySrc}</span>
+            <span style={{fontSize:12,color:IBM.gray60}}>Expected only: {onlyExp}</span>
+          </div>
+        );
+      })()}
 
       {/* ── Reference table ── */}
       <div style={{background:"#fff",border:"1px solid "+IBM.gray20,borderRadius:4,marginBottom:24}}>
@@ -5078,8 +5171,9 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
   const[showNameMatch,setShowNameMatch]=useState(false);
   const[filterRM,setFilterRM]=useState("");        // resource manager filter
   const[filterWBS,setFilterWBS]=useState("");      // WBS/project filter
-  const[billRateDB,setBillRateDB]=useState([]);   // Bill rate reference database
-  const[invoices,  setInvoices]  =useState([]);   // Parsed invoice PDFs (shared with InvoiceTab)
+  const[billRateDB,         setBillRateDB]         =useState(function(){ try{ return JSON.parse(localStorage.getItem("tsm_billRateDB")||"[]"); }catch(e){ return []; } });
+  const[expectedBillRateDB, setExpectedBillRateDB] =useState(function(){ try{ return JSON.parse(localStorage.getItem("tsm_expectedBillRateDB")||"[]"); }catch(e){ return []; } });
+  const[invoices,           setInvoices]           =useState(function(){ try{ return JSON.parse(localStorage.getItem("tsm_invoices")||"[]"); }catch(e){ return []; } });
   // ── OneDrive (MSAL) ───────────────────────────────────────────────────────
   const[odClientId, setOdClientId]=useState(()=>localStorage.getItem("od_client_id")||"");
   const[odConnected,setOdConnected]=useState(false);
@@ -5113,18 +5207,23 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
 
   const lfsConnected = !!lfsHandle;
 
+  // ── Auto-persist data to localStorage so it survives browser close ───────────
+  useEffect(function(){ try{ localStorage.setItem("tsm_billRateDB",         JSON.stringify(billRateDB));         }catch(e){} },[billRateDB]);
+  useEffect(function(){ try{ localStorage.setItem("tsm_expectedBillRateDB", JSON.stringify(expectedBillRateDB)); }catch(e){} },[expectedBillRateDB]);
+  useEffect(function(){ try{ localStorage.setItem("tsm_invoices",           JSON.stringify(invoices));           }catch(e){} },[invoices]);
+
   const lfsSaveDB = useCallback(async function(){
     if(!lfsHandle) return;
     setLfsSyncing(true);
     try{
-      var db = {billRateDB, calendarEvents, manualMatches, mgrName, mgrEmail, mgrDept, savedAt:new Date().toISOString()};
+      var db = {billRateDB, expectedBillRateDB, invoices, calendarEvents, manualMatches, mgrName, mgrEmail, mgrDept, savedAt:new Date().toISOString()};
       await LFS.saveDatabase(lfsHandle, db);
       var ts = new Date().toLocaleTimeString();
       setLfsLastSync(ts); localStorage.setItem("lfs_last_sync", ts);
       showToast("✓ Database saved to "+lfsHandle.name);
     }catch(e){ showToast("Save failed: "+e.message,"error"); }
     setLfsSyncing(false);
-  },[lfsHandle, billRateDB, calendarEvents, manualMatches, mgrName, mgrEmail, mgrDept]);
+  },[lfsHandle, billRateDB, expectedBillRateDB, invoices, calendarEvents, manualMatches, mgrName, mgrEmail, mgrDept]);
 
   const lfsLoadDB = useCallback(async function(){
     if(!lfsHandle) return;
@@ -5132,12 +5231,14 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
     try{
       var db = await LFS.loadDatabase(lfsHandle);
       if(!db){ showToast("No database file found in this folder yet — save one first","warn"); setLfsSyncing(false); return; }
-      if(db.billRateDB)     setBillRateDB(db.billRateDB);
-      if(db.calendarEvents) setCalendarEvents(db.calendarEvents);
-      if(db.manualMatches)  setManualMatches(db.manualMatches);
-      if(db.mgrName)        setMgrName(db.mgrName);
-      if(db.mgrEmail)       setMgrEmail(db.mgrEmail);
-      if(db.mgrDept)        setMgrDept(db.mgrDept);
+      if(db.billRateDB)         setBillRateDB(db.billRateDB);
+      if(db.expectedBillRateDB) setExpectedBillRateDB(db.expectedBillRateDB);
+      if(db.invoices)           setInvoices(db.invoices);
+      if(db.calendarEvents)     setCalendarEvents(db.calendarEvents);
+      if(db.manualMatches)      setManualMatches(db.manualMatches);
+      if(db.mgrName)            setMgrName(db.mgrName);
+      if(db.mgrEmail)           setMgrEmail(db.mgrEmail);
+      if(db.mgrDept)            setMgrDept(db.mgrDept);
       var ts = new Date().toLocaleTimeString();
       setLfsLastSync(ts); localStorage.setItem("lfs_last_sync", ts);
       showToast("✓ Database loaded from "+lfsHandle.name);
@@ -5164,7 +5265,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
     setOdSyncing(true);
     try{
       var db = Object.assign({
-        billRateDB,
+        billRateDB, expectedBillRateDB, invoices,
         calendarEvents,
         manualMatches,
         mgrName, mgrEmail, mgrDept,
@@ -5178,7 +5279,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
       showToast("OneDrive save failed: "+e.message,"error");
     }
     setOdSyncing(false);
-  },[odConnected, billRateDB, calendarEvents, manualMatches, mgrName, mgrEmail, mgrDept]);
+  },[odConnected, billRateDB, expectedBillRateDB, invoices, calendarEvents, manualMatches, mgrName, mgrEmail, mgrDept]);
 
   // ── OneDrive: load database helper ───────────────────────────────────────────
   const odLoadDB = useCallback(async function(){
@@ -5186,12 +5287,14 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
     setOdSyncing(true);
     try{
       var db = await OD.loadDatabase();
-      if(db.billRateDB)    setBillRateDB(db.billRateDB);
-      if(db.calendarEvents)setCalendarEvents(db.calendarEvents);
-      if(db.manualMatches) setManualMatches(db.manualMatches);
-      if(db.mgrName)       setMgrName(db.mgrName);
-      if(db.mgrEmail)      setMgrEmail(db.mgrEmail);
-      if(db.mgrDept)       setMgrDept(db.mgrDept);
+      if(db.billRateDB)         setBillRateDB(db.billRateDB);
+      if(db.expectedBillRateDB) setExpectedBillRateDB(db.expectedBillRateDB);
+      if(db.invoices)           setInvoices(db.invoices);
+      if(db.calendarEvents)     setCalendarEvents(db.calendarEvents);
+      if(db.manualMatches)      setManualMatches(db.manualMatches);
+      if(db.mgrName)            setMgrName(db.mgrName);
+      if(db.mgrEmail)           setMgrEmail(db.mgrEmail);
+      if(db.mgrDept)            setMgrDept(db.mgrDept);
       var ts = new Date().toLocaleTimeString();
       setOdLastSync(ts);
       localStorage.setItem("od_last_sync", ts);
@@ -6023,7 +6126,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
 
       {activeTab==="users"&&<UserManagementTab session={session} showToast={showToast}/>}
       {activeTab==="calendar"&&<CalendarEventsTab calendarEvents={calendarEvents} setCalendarEvents={setCalendarEvents} showToast={showToast}/>}
-      {activeTab==="billrate"&&<BillRateTab users={users} billRateDB={billRateDB} setBillRateDB={setBillRateDB} showToast={showToast}/>}
+      {activeTab==="billrate"&&<BillRateTab users={users} billRateDB={billRateDB} setBillRateDB={setBillRateDB} expectedBillRateDB={expectedBillRateDB} setExpectedBillRateDB={setExpectedBillRateDB} showToast={showToast}/>}
       {activeTab==="invoice"&&<InvoiceTab users={users} billRateDB={billRateDB} invoices={invoices} setInvoices={setInvoices} showToast={showToast}/>}
 
       {activeTab==="profile"&&(
