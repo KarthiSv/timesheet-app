@@ -10,7 +10,8 @@ export default defineConfig({
         manualChunks: {
           vendor: ['react', 'react-dom'],
           charts: ['recharts'],
-          xlsx: ['xlsx']
+          xlsx: ['xlsx'],
+          msal: ['@azure/msal-browser']
         }
       }
     }
