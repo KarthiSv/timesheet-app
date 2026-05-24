@@ -4738,12 +4738,21 @@ function BillRateTab({users, billRateDB, setBillRateDB, expectedBillRateDB, setE
     });
   },[billRateDB, filterCode, filterWbs]);
 
-  // Build validation results for all IBM users
+  // Build validation results for all IBM users (include expected lookup)
   var valResults = useMemo(function(){
     return users.filter(function(u){ return u.dataSource!=="Clarity only"; }).map(function(u){
-      return Object.assign({}, u, {_val: validateUserBillRate(u, billRateDB)});
+      var val = validateUserBillRate(u, billRateDB);
+      // All source matches for this billing code (for display)
+      var srcRefs = u.billingCode
+        ? billRateDB.filter(function(r){ return String(r.billingCode)===String(u.billingCode); })
+        : [];
+      // All expected matches for this billing code (independent lookup)
+      var expRefs = u.billingCode
+        ? expectedBillRateDB.filter(function(r){ return String(r.billingCode)===String(u.billingCode); })
+        : [];
+      return Object.assign({}, u, {_val: val, _srcRefs: srcRefs, _expRefs: expRefs});
     });
-  },[users, billRateDB]);
+  },[users, billRateDB, expectedBillRateDB]);
 
   var valCounts = useMemo(function(){
     var c={match:0,mismatch:0,unknown:0,no_code:0,no_rate:0};
@@ -5054,16 +5063,20 @@ function BillRateTab({users, billRateDB, setBillRateDB, expectedBillRateDB, setE
             <div style={{overflowX:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse"}}>
                 <thead><tr>
-                  {["Name","WBS ID","Hire Type","Resource Type","Billing Code","IBM Rate","Expected Rate(s)","Status"].map(function(h){
+                  {["Name","WBS ID","Hire Type","Resource Type","Billing Code","IBM Rate","Source Rate(s)","Expected Rate(s)","Status"].map(function(h){
                     return <th key={h} style={TH2}>{h}</th>;
                   })}
                 </tr></thead>
                 <tbody>
-                  {filteredVal.length===0&&<tr><td colSpan={8} style={{padding:"20px",textAlign:"center",color:IBM.gray50,fontSize:13}}>No records in this category.</td></tr>}
+                  {filteredVal.length===0&&<tr><td colSpan={9} style={{padding:"20px",textAlign:"center",color:IBM.gray50,fontSize:13}}>No records in this category.</td></tr>}
                   {filteredVal.map(function(u, idx){
                     var v = u._val;
-                    var refs = v.refs||[];
-                    var expectedRates = refs.map(function(r){ return "$"+Number(r.billingRate).toFixed(2); }).join(", ");
+                    var srcRefs  = u._srcRefs||[];
+                    var expRefs  = u._expRefs||[];
+                    var srcRates = srcRefs.map(function(r){ return "$"+Number(r.billingRate).toFixed(2); }).join(", ");
+                    var expRates = expRefs.map(function(r){ return "$"+Number(r.billingRate).toFixed(2); }).join(", ");
+                    // For mismatch diff: use first source ref
+                    var firstSrcRate = Number((srcRefs[0]||{}).billingRate)||0;
                     return (
                       <tr key={u.id}>
                         <td style={TD2(idx%2)}><span style={{fontWeight:600}}>{u.name}</span></td>
@@ -5077,11 +5090,14 @@ function BillRateTab({users, billRateDB, setBillRateDB, expectedBillRateDB, setE
                           {u.billingRate?<b style={{color:v.status==="mismatch"?IBM.red60:IBM.gray100}}>${Number(u.billingRate).toFixed(2)}</b>:<span style={{color:IBM.gray30}}>—</span>}
                         </td>
                         <td style={TD2(idx%2)}>
-                          {expectedRates?<span style={{fontSize:12,color:IBM.green50,fontWeight:600}}>{expectedRates}</span>:<span style={{color:IBM.gray30,fontSize:11}}>—</span>}
+                          {srcRates?<span style={{fontSize:12,color:IBM.blue70,fontWeight:600}}>{srcRates}</span>:<span style={{color:IBM.gray30,fontSize:11}}>—</span>}
+                        </td>
+                        <td style={TD2(idx%2)}>
+                          {expRates?<span style={{fontSize:12,color:"#6929c4",fontWeight:600}}>{expRates}</span>:<span style={{color:IBM.gray30,fontSize:11}}>—</span>}
                         </td>
                         <td style={TD2(idx%2)}>
                           <span style={valStatusStyle(v.status)}>{valStatusLabel(v.status)}</span>
-                          {v.status==="mismatch"&&<div style={{fontSize:10,color:IBM.red60,marginTop:2}}>Diff: ${Math.abs(Number(u.billingRate)-(Number(refs[0]&&refs[0].billingRate)||0)).toFixed(2)}</div>}
+                          {v.status==="mismatch"&&<div style={{fontSize:10,color:IBM.red60,marginTop:2}}>Diff: ${Math.abs(Number(u.billingRate)-firstSrcRate).toFixed(2)}</div>}
                         </td>
                       </tr>
                     );
