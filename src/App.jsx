@@ -5112,6 +5112,87 @@ function BillRateTab({users, billRateDB, setBillRateDB, expectedBillRateDB, setE
   );
 }
 
+// ─── SESSION RESTORE MODAL ────────────────────────────────────────────────────
+function SessionRestoreModal({ onLoadFile, onContinue, onStartFresh, savedAt, hasBillRate, hasInvoices, hasUsers }){
+  var inputRef = useRef(null);
+  var [loading, setLoading] = useState(false);
+  var [err, setErr] = useState("");
+
+  function handleFile(e){
+    var f = e.target.files[0];
+    if(!f){ return; }
+    setLoading(true); setErr("");
+    var reader = new FileReader();
+    reader.onload = function(ev){
+      try{
+        var db = JSON.parse(ev.target.result);
+        onLoadFile(db);
+      } catch(ex){ setErr("Could not parse file: "+ex.message); setLoading(false); }
+    };
+    reader.onerror = function(){ setErr("File read error"); setLoading(false); };
+    reader.readAsText(f);
+    e.target.value = "";
+  }
+
+  var savedLabel = savedAt ? new Date(savedAt).toLocaleString() : "unknown time";
+  var items = [];
+  if(hasBillRate)  items.push("Bill rate reference data");
+  if(hasInvoices)  items.push("Invoice records");
+  if(hasUsers)     items.push("IBM/Clarity timesheet records");
+
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.55)",zIndex:9000,display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <div style={{background:"#fff",width:480,maxWidth:"95vw",boxShadow:"0 8px 32px rgba(0,0,0,0.3)",fontFamily:FF_SANS}}>
+        {/* Header */}
+        <div style={{background:IBM.blue60,color:"#fff",padding:"16px 24px"}}>
+          <div style={{fontSize:16,fontWeight:700}}>💾 Restore Previous Session?</div>
+          <div style={{fontSize:12,opacity:0.85,marginTop:3}}>Saved data found from your last visit</div>
+        </div>
+        {/* Body */}
+        <div style={{padding:"20px 24px"}}>
+          {items.length>0&&(
+            <div style={{background:IBM.blue10,border:"1px solid "+IBM.blue20,padding:"10px 14px",marginBottom:16,fontSize:12}}>
+              <div style={{fontWeight:700,color:IBM.blue70,marginBottom:4}}>Found in browser storage:</div>
+              {items.map(function(it,i){ return <div key={i} style={{color:IBM.gray70,marginTop:2}}>• {it}</div>; })}
+              <div style={{color:IBM.gray50,marginTop:6,fontSize:11}}>Last auto-saved: {savedLabel}</div>
+            </div>
+          )}
+          <div style={{fontSize:13,color:IBM.gray70,marginBottom:20}}>
+            Choose how to start this session:
+          </div>
+          {err&&<div style={{padding:"8px 12px",background:"#fff1f1",border:"1px solid #ffb3b8",color:IBM.red60,fontSize:12,marginBottom:12}}>⚠ {err}</div>}
+          {/* Option 1: Continue with saved data */}
+          <button onClick={onContinue}
+            style={{width:"100%",padding:"13px 16px",background:IBM.blue60,color:"#fff",border:"none",cursor:"pointer",fontSize:14,fontWeight:600,marginBottom:10,textAlign:"left",display:"flex",alignItems:"center",gap:10}}>
+            <span style={{fontSize:18}}>✓</span>
+            <div>
+              <div>Continue with saved session</div>
+              <div style={{fontSize:11,fontWeight:400,opacity:0.85}}>Restore all data from your last browser session</div>
+            </div>
+          </button>
+          {/* Option 2: Load from JSON file */}
+          <button onClick={function(){ inputRef.current&&inputRef.current.click(); }}
+            disabled={loading}
+            style={{width:"100%",padding:"13px 16px",background:"#fff",color:IBM.gray100,border:"2px solid "+IBM.gray30,cursor:"pointer",fontSize:14,fontWeight:600,marginBottom:10,textAlign:"left",display:"flex",alignItems:"center",gap:10}}>
+            <span style={{fontSize:18}}>📂</span>
+            <div>
+              <div>{loading?"Loading…":"Open session file (JSON)"}</div>
+              <div style={{fontSize:11,fontWeight:400,color:IBM.gray60}}>Browse for TimesheetManager_DB.json from your local folder</div>
+            </div>
+          </button>
+          <input ref={inputRef} type="file" accept=".json" style={{display:"none"}} onChange={handleFile}/>
+          {/* Option 3: Start fresh */}
+          <button onClick={onStartFresh}
+            style={{width:"100%",padding:"11px 16px",background:"none",color:IBM.gray60,border:"1px solid "+IBM.gray20,cursor:"pointer",fontSize:13,textAlign:"left",display:"flex",alignItems:"center",gap:10}}>
+            <span style={{fontSize:16}}>🗑</span>
+            <div>Start fresh (clear saved data)</div>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── CHANGE PASSWORD PANEL (proper component to satisfy Rules of Hooks) ───────
 function ChangePasswordPanel({session}) {
   const[ownPw,     setOwnPw]     = useState("");
@@ -5213,6 +5294,18 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
   const[relinkUserId,setRelinkUserId]=useState(null); // normalizedName of row showing re-link dropdown in records table
   const[manualMatches,setManualMatches]=useState({}); // {ibmNormName: clarityNormName} for re-linking in records table
 
+  // ── Session restore modal ─────────────────────────────────────────────────
+  var hasSavedBillRate  = billRateDB.length>0;
+  var hasSavedInvoices  = invoices.length>0;
+  var hasSavedUsers     = (function(){ try{ var u=JSON.parse(localStorage.getItem("tsm_users")||"[]"); return u.some(function(x){return x.dataSource||x.name;}); }catch(e){return false;} })();
+  var hasSavedData      = hasSavedBillRate||hasSavedInvoices||hasSavedUsers;
+  var savedAt           = (function(){ try{ return localStorage.getItem("tsm_saved_at")||""; }catch(e){return "";} })();
+  const[showRestoreModal,setShowRestoreModal] = useState(hasSavedData);
+
+  // ── Auto-save ref (so debounced callback always has latest lfsSaveDB) ────
+  const lfsSaveDBRef = useRef(null);
+  const autoSaveTimer = useRef(null);
+
   // ── Local Folder: restore saved handle on mount ───────────────────────────
   useEffect(function(){
     if(!LFS.isSupported()) return;
@@ -5224,9 +5317,14 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
   const lfsConnected = !!lfsHandle;
 
   // ── Auto-persist data to localStorage so it survives browser close ───────────
-  useEffect(function(){ try{ localStorage.setItem("tsm_billRateDB",         JSON.stringify(billRateDB));         }catch(e){} },[billRateDB]);
-  useEffect(function(){ try{ localStorage.setItem("tsm_expectedBillRateDB", JSON.stringify(expectedBillRateDB)); }catch(e){} },[expectedBillRateDB]);
-  useEffect(function(){ try{ localStorage.setItem("tsm_invoices",           JSON.stringify(invoices));           }catch(e){} },[invoices]);
+  useEffect(function(){
+    try{
+      localStorage.setItem("tsm_billRateDB",         JSON.stringify(billRateDB));
+      localStorage.setItem("tsm_expectedBillRateDB", JSON.stringify(expectedBillRateDB));
+      localStorage.setItem("tsm_invoices",           JSON.stringify(invoices));
+      localStorage.setItem("tsm_saved_at",           new Date().toISOString());
+    }catch(e){}
+  },[billRateDB, expectedBillRateDB, invoices]);
 
   const lfsSaveDB = useCallback(async function(){
     if(!lfsHandle) return;
@@ -5241,12 +5339,15 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
     setLfsSyncing(false);
   },[lfsHandle, billRateDB, expectedBillRateDB, invoices, calendarEvents, manualMatches, mgrName, mgrEmail, mgrDept]);
 
-  const lfsLoadDB = useCallback(async function(){
+  const lfsLoadDB = useCallback(async function(silent){
     if(!lfsHandle) return;
     setLfsSyncing(true);
     try{
       var db = await LFS.loadDatabase(lfsHandle);
-      if(!db){ showToast("No database file found in this folder yet — save one first","warn"); setLfsSyncing(false); return; }
+      if(!db){
+        if(!silent) showToast("No database file found in this folder yet — save one first","warn");
+        setLfsSyncing(false); return;
+      }
       if(db.billRateDB)         setBillRateDB(db.billRateDB);
       if(db.expectedBillRateDB) setExpectedBillRateDB(db.expectedBillRateDB);
       if(db.invoices)           setInvoices(db.invoices);
@@ -5257,9 +5358,35 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
       if(db.mgrDept)            setMgrDept(db.mgrDept);
       var ts = new Date().toLocaleTimeString();
       setLfsLastSync(ts); localStorage.setItem("lfs_last_sync", ts);
-      showToast("✓ Database loaded from "+lfsHandle.name);
-    }catch(e){ showToast("Load failed: "+e.message,"error"); }
+      setShowRestoreModal(false); // dismiss modal if folder auto-loaded data
+      showToast("✓ Session restored from "+lfsHandle.name);
+    }catch(e){ if(!silent) showToast("Load failed: "+e.message,"error"); }
     setLfsSyncing(false);
+  },[lfsHandle]);
+
+  // ── Keep save-ref current so debounce callback always has latest version ────
+  lfsSaveDBRef.current = lfsSaveDB;
+
+  // ── Auto-save to local folder (debounced 8s) whenever data changes ─────────
+  useEffect(function(){
+    if(!lfsHandle) return;
+    if(autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+    autoSaveTimer.current = setTimeout(function(){
+      if(lfsSaveDBRef.current) lfsSaveDBRef.current();
+    }, 8000);
+    return function(){ if(autoSaveTimer.current) clearTimeout(autoSaveTimer.current); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[lfsHandle, billRateDB, expectedBillRateDB, invoices, calendarEvents, manualMatches]);
+
+  // ── Auto-load from folder when folder is first connected ─────────────────
+  const prevLfsHandleRef = useRef(null);
+  useEffect(function(){
+    if(lfsHandle && !prevLfsHandleRef.current){
+      // Folder just became connected — auto-load if DB file exists
+      lfsLoadDB();
+    }
+    prevLfsHandleRef.current = lfsHandle;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   },[lfsHandle]);
 
   // ── OneDrive: re-init MSAL on mount if clientId already saved ────────────────
@@ -5328,6 +5455,33 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
   const periodLabel=(PERIODS.find(p=>p.value===selPeriod)||{label:selPeriod}).label;
   const monthLabel=`${selMonth} ${selYear}`;
   const showToast=(msg,type="success")=>{setToast({msg,type});setTimeout(()=>setToast(null),4000);};
+
+  // ── Session restore handlers ──────────────────────────────────────────────
+  function restoreFromDB(db){
+    if(db.billRateDB)         setBillRateDB(db.billRateDB);
+    if(db.expectedBillRateDB) setExpectedBillRateDB(db.expectedBillRateDB);
+    if(db.invoices)           setInvoices(db.invoices);
+    if(db.calendarEvents)     setCalendarEvents(db.calendarEvents);
+    if(db.manualMatches)      setManualMatches(db.manualMatches);
+    if(db.mgrName)            setMgrName(db.mgrName);
+    if(db.mgrEmail)           setMgrEmail(db.mgrEmail);
+    if(db.mgrDept)            setMgrDept(db.mgrDept);
+    setShowRestoreModal(false);
+    showToast("✓ Session restored from file");
+  }
+  function handleRestoreContinue(){
+    setShowRestoreModal(false);
+    showToast("✓ Continuing with saved session data");
+  }
+  function handleRestoreFresh(){
+    setBillRateDB([]); setExpectedBillRateDB([]); setInvoices([]);
+    setCalendarEvents([]); setManualMatches({});
+    try{
+      ["tsm_billRateDB","tsm_expectedBillRateDB","tsm_invoices","tsm_saved_at"].forEach(function(k){ localStorage.removeItem(k); });
+    }catch(e){}
+    setShowRestoreModal(false);
+    showToast("Started fresh session");
+  }
   const handleImport=function(data, mergedInfo, clarityRecsFromImport) {
     // Save clarity records for use in Re-link dropdown outside import modal
     if (clarityRecsFromImport) setSavedClarityRecs(clarityRecsFromImport);
@@ -6184,6 +6338,13 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
       )}
 
       {showImport&&<ImportModal onImport={handleImport} onClose={()=>setShowImport(false)} odConnected={odConnected} lfsHandle={lfsHandle}/>}
+      {showRestoreModal&&<SessionRestoreModal
+        hasBillRate={hasSavedBillRate} hasInvoices={hasSavedInvoices} hasUsers={hasSavedUsers}
+        savedAt={savedAt}
+        onLoadFile={restoreFromDB}
+        onContinue={handleRestoreContinue}
+        onStartFresh={handleRestoreFresh}
+      />}
 
       {/* Employee detail panel — receives userId so it always reads live data */}
       {detailUserId&&(
