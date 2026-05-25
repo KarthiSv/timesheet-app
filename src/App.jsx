@@ -4903,20 +4903,25 @@ function BillRateTab({users, billRateDB, setBillRateDB, expectedBillRateDB, setE
             <input id="br-file-input" type="file" accept=".xlsx,.xls" multiple style={{display:"none"}}
               onChange={function(e){ handleFileDrop(e.target.files); e.target.value=""; }}/>
           </div>
-          {loadedFiles.length>0&&(
-            <div style={{marginTop:8,display:"flex",flexWrap:"wrap",gap:4,alignItems:"center"}}>
-              {loadedFiles.map(function(f,i){ return (
-                <span key={i} style={{background:IBM.blue10,color:IBM.blue60,border:"1px solid "+IBM.blue20,padding:"2px 8px",fontSize:11,fontWeight:600}}>📄 {f.name}</span>
-              );})}
-              <span style={{fontSize:11,color:IBM.gray50}}>{billRateDB.length} entries</span>
-            </div>
-          )}
-          {billRateDB.length>0&&loadedFiles.length===0&&(
-            <div style={{marginTop:8,display:"flex",alignItems:"center",gap:6}}>
-              <span style={{fontSize:11,color:IBM.green50,fontWeight:600}}>✓ {billRateDB.length} entries loaded (from saved session)</span>
-              <button onClick={function(){ setBillRateDB([]); showToast("Source data cleared"); }} style={{fontSize:10,padding:"1px 7px",border:"1px solid "+IBM.red60,background:"none",color:IBM.red60,cursor:"pointer"}}>Clear</button>
-            </div>
-          )}
+          {billRateDB.length>0&&(function(){
+            // Derive file names from data (works for both freshly-uploaded and session-restored data)
+            var srcNames = loadedFiles.length>0
+              ? loadedFiles.map(function(f){ return f.name; })
+              : Array.from(new Set(billRateDB.map(function(r){ return r.source; }).filter(Boolean)));
+            var fromSession = loadedFiles.length===0;
+            return (
+              <div style={{marginTop:8}}>
+                <div style={{display:"flex",flexWrap:"wrap",gap:4,alignItems:"center",marginBottom:fromSession?4:0}}>
+                  {srcNames.map(function(n,i){ return (
+                    <span key={i} style={{background:IBM.blue10,color:IBM.blue60,border:"1px solid "+IBM.blue20,padding:"2px 8px",fontSize:11,fontWeight:600}}>📄 {n}</span>
+                  );})}
+                  <span style={{fontSize:11,color:IBM.gray50}}>{billRateDB.length} entries</span>
+                  <button onClick={function(){ setBillRateDB([]); setLoadedFiles([]); showToast("Source data cleared"); }} style={{fontSize:10,padding:"1px 7px",border:"1px solid "+IBM.red60,background:"none",color:IBM.red60,cursor:"pointer",marginLeft:4}}>Clear</button>
+                </div>
+                {fromSession&&<div style={{fontSize:10,color:IBM.gray50}}>↑ restored from saved session</div>}
+              </div>
+            );
+          })()}
         </div>
 
         {/* Expected */}
@@ -4935,20 +4940,24 @@ function BillRateTab({users, billRateDB, setBillRateDB, expectedBillRateDB, setE
             <input id="br-exp-input" type="file" accept=".xlsx,.xls" multiple style={{display:"none"}}
               onChange={function(e){ handleExpectedFileDrop(e.target.files); e.target.value=""; }}/>
           </div>
-          {expectedFiles.length>0&&(
-            <div style={{marginTop:8,display:"flex",flexWrap:"wrap",gap:4,alignItems:"center"}}>
-              {expectedFiles.map(function(f,i){ return (
-                <span key={i} style={{background:"#f6f2ff",color:"#6929c4",border:"1px solid #d4bbff",padding:"2px 8px",fontSize:11,fontWeight:600}}>📄 {f.name}</span>
-              );})}
-              <span style={{fontSize:11,color:IBM.gray50}}>{expectedBillRateDB.length} entries</span>
-            </div>
-          )}
-          {expectedBillRateDB.length>0&&expectedFiles.length===0&&(
-            <div style={{marginTop:8,display:"flex",alignItems:"center",gap:6}}>
-              <span style={{fontSize:11,color:"#6929c4",fontWeight:600}}>✓ {expectedBillRateDB.length} entries loaded (from saved session)</span>
-              <button onClick={function(){ setExpectedBillRateDB([]); showToast("Expected data cleared"); }} style={{fontSize:10,padding:"1px 7px",border:"1px solid "+IBM.red60,background:"none",color:IBM.red60,cursor:"pointer"}}>Clear</button>
-            </div>
-          )}
+          {expectedBillRateDB.length>0&&(function(){
+            var expNames = expectedFiles.length>0
+              ? expectedFiles.map(function(f){ return f.name; })
+              : Array.from(new Set(expectedBillRateDB.map(function(r){ return r.source; }).filter(Boolean)));
+            var fromSession = expectedFiles.length===0;
+            return (
+              <div style={{marginTop:8}}>
+                <div style={{display:"flex",flexWrap:"wrap",gap:4,alignItems:"center",marginBottom:fromSession?4:0}}>
+                  {expNames.map(function(n,i){ return (
+                    <span key={i} style={{background:"#f6f2ff",color:"#6929c4",border:"1px solid #d4bbff",padding:"2px 8px",fontSize:11,fontWeight:600}}>📄 {n}</span>
+                  );})}
+                  <span style={{fontSize:11,color:IBM.gray50}}>{expectedBillRateDB.length} entries</span>
+                  <button onClick={function(){ setExpectedBillRateDB([]); setExpectedFiles([]); showToast("Expected data cleared"); }} style={{fontSize:10,padding:"1px 7px",border:"1px solid "+IBM.red60,background:"none",color:IBM.red60,cursor:"pointer",marginLeft:4}}>Clear</button>
+                </div>
+                {fromSession&&<div style={{fontSize:10,color:IBM.gray50}}>↑ restored from saved session</div>}
+              </div>
+            );
+          })()}
         </div>
       </div>
 
