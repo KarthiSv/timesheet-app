@@ -4705,11 +4705,32 @@ function parseBillRateFile(file){
   });
 }
 
+// Narrow a list of DB refs to the most specific match for a given user.
+// Priority: WBS+code+hireType+resourceType → WBS+code → code only
+function narrowRefs(u, refs){
+  if(!refs.length) return refs;
+  // Try WBS + hire type + resource type
+  if(u.wbsId && u.hireType && u.resourceType){
+    var r1 = refs.filter(function(r){
+      return r.wbsId===u.wbsId && r.hireType===u.hireType && r.resourceType===u.resourceType;
+    });
+    if(r1.length) return r1;
+  }
+  // Try WBS only
+  if(u.wbsId){
+    var r2 = refs.filter(function(r){ return r.wbsId===u.wbsId; });
+    if(r2.length) return r2;
+  }
+  // Fall back to all billing-code matches
+  return refs;
+}
+
 function validateUserBillRate(u, db){
   if(!u.billingCode) return {status:"no_code"};
   if(!db || !db.length) return {status:"no_db"};
-  var matches = db.filter(function(r){ return String(r.billingCode)===String(u.billingCode); });
-  if(!matches.length) return {status:"unknown"};
+  var all = db.filter(function(r){ return String(r.billingCode)===String(u.billingCode); });
+  if(!all.length) return {status:"unknown"};
+  var matches = narrowRefs(u, all);
   if(!u.billingRate) return {status:"no_rate", refs:matches};
   var exact = matches.find(function(r){ return Math.abs(Number(r.billingRate)-Number(u.billingRate))<0.01; });
   if(exact) return {status:"match", ref:exact};
@@ -4742,14 +4763,12 @@ function BillRateTab({users, billRateDB, setBillRateDB, expectedBillRateDB, setE
   var valResults = useMemo(function(){
     return users.filter(function(u){ return u.dataSource!=="Clarity only"; }).map(function(u){
       var val = validateUserBillRate(u, billRateDB);
-      // All source matches for this billing code (for display)
-      var srcRefs = u.billingCode
-        ? billRateDB.filter(function(r){ return String(r.billingCode)===String(u.billingCode); })
-        : [];
-      // All expected matches for this billing code (independent lookup)
-      var expRefs = u.billingCode
-        ? expectedBillRateDB.filter(function(r){ return String(r.billingCode)===String(u.billingCode); })
-        : [];
+      // Source refs: narrow to WBS+hireType+resType match first, then fall back
+      var srcAll  = u.billingCode ? billRateDB.filter(function(r){ return String(r.billingCode)===String(u.billingCode); }) : [];
+      var srcRefs = narrowRefs(u, srcAll);
+      // Expected refs: same narrowing against expectedBillRateDB
+      var expAll  = u.billingCode ? expectedBillRateDB.filter(function(r){ return String(r.billingCode)===String(u.billingCode); }) : [];
+      var expRefs = narrowRefs(u, expAll);
       return Object.assign({}, u, {_val: val, _srcRefs: srcRefs, _expRefs: expRefs});
     });
   },[users, billRateDB, expectedBillRateDB]);
