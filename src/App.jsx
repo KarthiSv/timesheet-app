@@ -5117,6 +5117,7 @@ function SessionRestoreModal({ onLoadFile, onContinue, onStartFresh, savedAt, ha
   var inputRef = useRef(null);
   var [loading, setLoading] = useState(false);
   var [err, setErr] = useState("");
+  var hasSaved = hasBillRate || hasInvoices || hasUsers;
 
   function handleFile(e){
     var f = e.target.files[0];
@@ -5134,58 +5135,72 @@ function SessionRestoreModal({ onLoadFile, onContinue, onStartFresh, savedAt, ha
     e.target.value = "";
   }
 
-  var savedLabel = savedAt ? new Date(savedAt).toLocaleString() : "unknown time";
+  var savedLabel = savedAt ? new Date(savedAt).toLocaleString() : null;
   var items = [];
   if(hasBillRate)  items.push("Bill rate reference data");
   if(hasInvoices)  items.push("Invoice records");
-  if(hasUsers)     items.push("IBM/Clarity timesheet records");
+  if(hasUsers)     items.push("IBM / Clarity timesheet records");
 
   return (
-    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.55)",zIndex:9000,display:"flex",alignItems:"center",justifyContent:"center"}}>
-      <div style={{background:"#fff",width:480,maxWidth:"95vw",boxShadow:"0 8px 32px rgba(0,0,0,0.3)",fontFamily:FF_SANS}}>
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.65)",zIndex:9000,display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <div style={{background:"#fff",width:500,maxWidth:"95vw",boxShadow:"0 12px 40px rgba(0,0,0,0.35)",fontFamily:FF_SANS}}>
         {/* Header */}
-        <div style={{background:IBM.blue60,color:"#fff",padding:"16px 24px"}}>
-          <div style={{fontSize:16,fontWeight:700}}>💾 Restore Previous Session?</div>
-          <div style={{fontSize:12,opacity:0.85,marginTop:3}}>Saved data found from your last visit</div>
+        <div style={{background:IBM.blue60,color:"#fff",padding:"18px 24px"}}>
+          <div style={{fontSize:17,fontWeight:700}}>📋 Welcome back</div>
+          <div style={{fontSize:12,opacity:0.85,marginTop:3}}>
+            {hasSaved ? "How would you like to start this session?" : "No saved session found — choose how to start"}
+          </div>
         </div>
         {/* Body */}
-        <div style={{padding:"20px 24px"}}>
-          {items.length>0&&(
-            <div style={{background:IBM.blue10,border:"1px solid "+IBM.blue20,padding:"10px 14px",marginBottom:16,fontSize:12}}>
-              <div style={{fontWeight:700,color:IBM.blue70,marginBottom:4}}>Found in browser storage:</div>
-              {items.map(function(it,i){ return <div key={i} style={{color:IBM.gray70,marginTop:2}}>• {it}</div>; })}
-              <div style={{color:IBM.gray50,marginTop:6,fontSize:11}}>Last auto-saved: {savedLabel}</div>
+        <div style={{padding:"22px 24px"}}>
+
+          {/* Saved data summary (only when data exists) */}
+          {hasSaved&&(
+            <div style={{background:IBM.blue10,border:"1px solid "+IBM.blue20,padding:"10px 14px",marginBottom:18,fontSize:12,borderRadius:2}}>
+              <div style={{fontWeight:700,color:IBM.blue70,marginBottom:5}}>💾 Saved session found:</div>
+              {items.map(function(it,i){ return (
+                <div key={i} style={{color:IBM.gray70,marginTop:2,display:"flex",alignItems:"center",gap:6}}>
+                  <span style={{color:IBM.green50,fontWeight:700}}>✓</span> {it}
+                </div>
+              );})}
+              {savedLabel&&<div style={{color:IBM.gray50,marginTop:8,fontSize:11}}>Last saved: {savedLabel}</div>}
             </div>
           )}
-          <div style={{fontSize:13,color:IBM.gray70,marginBottom:20}}>
-            Choose how to start this session:
-          </div>
+
           {err&&<div style={{padding:"8px 12px",background:"#fff1f1",border:"1px solid #ffb3b8",color:IBM.red60,fontSize:12,marginBottom:12}}>⚠ {err}</div>}
-          {/* Option 1: Continue with saved data */}
-          <button onClick={onContinue}
-            style={{width:"100%",padding:"13px 16px",background:IBM.blue60,color:"#fff",border:"none",cursor:"pointer",fontSize:14,fontWeight:600,marginBottom:10,textAlign:"left",display:"flex",alignItems:"center",gap:10}}>
-            <span style={{fontSize:18}}>✓</span>
-            <div>
-              <div>Continue with saved session</div>
-              <div style={{fontSize:11,fontWeight:400,opacity:0.85}}>Restore all data from your last browser session</div>
-            </div>
-          </button>
+
+          {/* Option 1: Continue with saved data — only when data exists */}
+          {hasSaved&&(
+            <button onClick={onContinue}
+              style={{width:"100%",padding:"14px 16px",background:IBM.blue60,color:"#fff",border:"none",cursor:"pointer",fontSize:14,fontWeight:600,marginBottom:10,textAlign:"left",display:"flex",alignItems:"center",gap:12,borderRadius:2}}>
+              <span style={{fontSize:20}}>✓</span>
+              <div>
+                <div>Continue with saved session</div>
+                <div style={{fontSize:11,fontWeight:400,opacity:0.85,marginTop:2}}>Use the data already loaded from your last browser session</div>
+              </div>
+            </button>
+          )}
+
           {/* Option 2: Load from JSON file */}
           <button onClick={function(){ inputRef.current&&inputRef.current.click(); }}
             disabled={loading}
-            style={{width:"100%",padding:"13px 16px",background:"#fff",color:IBM.gray100,border:"2px solid "+IBM.gray30,cursor:"pointer",fontSize:14,fontWeight:600,marginBottom:10,textAlign:"left",display:"flex",alignItems:"center",gap:10}}>
-            <span style={{fontSize:18}}>📂</span>
+            style={{width:"100%",padding:"14px 16px",background:"#fff",color:IBM.gray100,border:"2px solid "+IBM.gray30,cursor:"pointer",fontSize:14,fontWeight:600,marginBottom:10,textAlign:"left",display:"flex",alignItems:"center",gap:12,borderRadius:2}}>
+            <span style={{fontSize:20}}>📂</span>
             <div>
-              <div>{loading?"Loading…":"Open session file (JSON)"}</div>
-              <div style={{fontSize:11,fontWeight:400,color:IBM.gray60}}>Browse for TimesheetManager_DB.json from your local folder</div>
+              <div>{loading?"Loading…":"Load session from file"}</div>
+              <div style={{fontSize:11,fontWeight:400,color:IBM.gray60,marginTop:2}}>Open your saved TimesheetManager_DB.json file</div>
             </div>
           </button>
           <input ref={inputRef} type="file" accept=".json" style={{display:"none"}} onChange={handleFile}/>
+
           {/* Option 3: Start fresh */}
           <button onClick={onStartFresh}
-            style={{width:"100%",padding:"11px 16px",background:"none",color:IBM.gray60,border:"1px solid "+IBM.gray20,cursor:"pointer",fontSize:13,textAlign:"left",display:"flex",alignItems:"center",gap:10}}>
-            <span style={{fontSize:16}}>🗑</span>
-            <div>Start fresh (clear saved data)</div>
+            style={{width:"100%",padding:"12px 16px",background:"none",color:hasSaved?IBM.gray60:IBM.gray100,border:"1px solid "+(hasSaved?IBM.gray20:IBM.gray30),cursor:"pointer",fontSize:hasSaved?13:14,fontWeight:hasSaved?400:600,textAlign:"left",display:"flex",alignItems:"center",gap:12,borderRadius:2}}>
+            <span style={{fontSize:hasSaved?15:20}}>{hasSaved?"🗑":"▶"}</span>
+            <div>
+              <div>{hasSaved?"Start fresh (clear saved data)":"Start new session"}</div>
+              {!hasSaved&&<div style={{fontSize:11,fontWeight:400,color:IBM.gray60,marginTop:2}}>Begin with no pre-loaded data</div>}
+            </div>
           </button>
         </div>
       </div>
@@ -5294,13 +5309,14 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
   const[relinkUserId,setRelinkUserId]=useState(null); // normalizedName of row showing re-link dropdown in records table
   const[manualMatches,setManualMatches]=useState({}); // {ibmNormName: clarityNormName} for re-linking in records table
 
-  // ── Session restore modal ─────────────────────────────────────────────────
+  // ── Session restore modal — always show on login ─────────────────────────
   var hasSavedBillRate  = billRateDB.length>0;
   var hasSavedInvoices  = invoices.length>0;
   var hasSavedUsers     = (function(){ try{ var u=JSON.parse(localStorage.getItem("tsm_users")||"[]"); return u.some(function(x){return x.dataSource||x.name;}); }catch(e){return false;} })();
   var hasSavedData      = hasSavedBillRate||hasSavedInvoices||hasSavedUsers;
   var savedAt           = (function(){ try{ return localStorage.getItem("tsm_saved_at")||""; }catch(e){return "";} })();
-  const[showRestoreModal,setShowRestoreModal] = useState(hasSavedData);
+  // Always show on login so user consciously picks Load / Continue / Fresh
+  const[showRestoreModal,setShowRestoreModal] = useState(true);
 
   // ── Auto-save ref (so debounced callback always has latest lfsSaveDB) ────
   const lfsSaveDBRef = useRef(null);
