@@ -4157,7 +4157,10 @@ function InvoiceTab({users, billRateDB, invoices, setInvoices, showToast}){
           <div style={{fontSize:20,fontWeight:700,color:IBM.gray100}}>📄 Invoice Validation</div>
           <div style={{fontSize:13,color:IBM.gray60,marginTop:3}}>Upload IBM invoices (PDF) and validate hours + rates against Clarity records</div>
         </div>
-        {invoices.length>0&&<button onClick={function(){setInvoices([]);setSelInvoice(null);showToast("Invoices cleared");}} style={{padding:"8px 14px",background:"none",border:"1px solid "+IBM.red40,color:IBM.red60,cursor:"pointer",fontSize:12}}>🗑 Clear All</button>}
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={function(){ showToast("✓ Invoice tab refreshed — showing latest employee data"); }} style={{padding:"8px 14px",background:"none",border:"1px solid "+IBM.teal50,color:IBM.teal50,cursor:"pointer",fontSize:12,fontWeight:600}}>&#x21bb; Refresh</button>
+          {invoices.length>0&&<button onClick={function(){setInvoices([]);setSelInvoice(null);showToast("Invoices cleared");}} style={{padding:"8px 14px",background:"none",border:"1px solid "+IBM.red40,color:IBM.red60,cursor:"pointer",fontSize:12}}>🗑 Clear All</button>}
+        </div>
       </div>
 
       {/* Drop zone */}
@@ -4879,6 +4882,7 @@ function BillRateTab({users, billRateDB, setBillRateDB, expectedBillRateDB, setE
           <div style={{fontSize:13,color:IBM.gray60,marginTop:3}}>Load Labor Claim Detail files as your billing reference database — edit, validate, and export</div>
         </div>
         <div style={{display:"flex",gap:8}}>
+          <button onClick={function(){ showToast("✓ Bill Rate refreshed — showing latest employee data"); }} style={{padding:"8px 14px",background:"none",border:"1px solid "+IBM.teal50,color:IBM.teal50,cursor:"pointer",fontSize:12,fontWeight:600}}>&#x21bb; Refresh</button>
           {billRateDB.length>0&&<button onClick={handleExport} style={{padding:"8px 16px",background:"#0e6027",color:"#fff",border:"none",cursor:"pointer",fontSize:13,fontWeight:600}}>⬇ Export Source (.xlsx)</button>}
           <button onClick={function(){ setBillRateDB([]); setLoadedFiles([]); setExpectedBillRateDB([]); setExpectedFiles([]); showToast("All bill rate data cleared"); }} style={{padding:"8px 14px",background:"none",border:"1px solid "+IBM.red60,color:IBM.red60,cursor:"pointer",fontSize:12}} disabled={!billRateDB.length&&!expectedBillRateDB.length}>🗑 Clear All</button>
         </div>
@@ -6127,6 +6131,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
                     <button onClick={function(){setShowNameMatch(true);}} style={{padding:"5px 12px",background:IBM.orange40,border:"none",color:"#fff",cursor:"pointer",fontSize:11,fontWeight:700}}>&#9888; Fix ({ibmOnlyCount+clarityOnlyCount})</button>
                   ):null;
                 })()}
+                <button onClick={function(){showToast("✓ Records refreshed — showing latest data");}} style={{padding:"5px 12px",background:"#fff",border:"1px solid "+IBM.teal50,color:IBM.teal50,cursor:"pointer",fontSize:11,fontWeight:600}}>&#x21bb; Refresh</button>
                 <button onClick={function(){handleExportFull(filtered, showAllMonths ? "All" : selMonth+"-"+selYear);}} style={{padding:"5px 12px",background:IBM.blue60,color:"#fff",border:"none",cursor:"pointer",fontSize:11,fontWeight:600}}>&#8595; Export ({filtered.length})</button>
                 <button onClick={function(){downloadConsolidated(users,monthLabel,periodLabel);}} style={{padding:"5px 12px",background:"#fff",border:"1px solid "+IBM.gray30,color:IBM.gray70,cursor:"pointer",fontSize:11}}>Legacy Export</button>
               </div>
@@ -6230,17 +6235,24 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
                                       else { next[u.normalizedName] = val; }
                                       return next;
                                     });
-                                    // Also update users so detail panel stays valid
+                                    // Also update users so bill rate / invoice tabs stay in sync
                                     if (val) {
                                       var newClarityRec = savedClarityRecs.find(function(c){ return c.normalizedName === val; });
                                       if (newClarityRec) {
+                                        // Use the current selected month's hours for "entered" so status/diff are correct.
+                                        // Fall back to total actualHours only if monthlyHours has no data at all.
+                                        var _relinkMonthKey = selMonth + "-" + selYear;
+                                        var _relinkMonthHours = newClarityRec.monthlyHours || {};
+                                        var _relinkEntered = _relinkMonthHours[_relinkMonthKey] !== undefined
+                                          ? _relinkMonthHours[_relinkMonthKey]
+                                          : (Object.keys(_relinkMonthHours).length > 0 ? 0 : (newClarityRec.actualHours || 0));
                                         setUsers(function(prev){ return prev.map(function(pu){
                                           if (pu.id !== u.id) return pu;
                                           return Object.assign({}, pu, {
                                             clarityName: newClarityRec.rawName,
-                                            entered: newClarityRec.actualHours || 0,
+                                            entered: _relinkEntered,
                                             actualHours: newClarityRec.actualHours || 0,
-                                            monthlyHours: newClarityRec.monthlyHours || {},
+                                            monthlyHours: _relinkMonthHours,
                                             timesheetStatus: newClarityRec.timesheetStatus || pu.timesheetStatus,
                                             resourceManager: newClarityRec.resourceManager || pu.resourceManager,
                                             approvedBy: newClarityRec.approvedBy || pu.approvedBy,
