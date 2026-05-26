@@ -321,21 +321,6 @@ function makeHistory(projList,totalSched,totalEntered){
 }
 
 const now_g=new Date();
-const BASE_USERS=[
-  {id:"E001",name:"Alice Johnson", email:"alice.j@co.com",  dept:"Engineering",resourceManager:"Rachel Green", scheduled:80,entered:80,lastEntry:"2025-06-14",projects:[{code:"PRJ-001",name:"Horizon Platform"},{code:"PRJ-004",name:"Data Lake"}]},
-  {id:"E002",name:"Bob Martinez",  email:"bob.m@co.com",    dept:"Design",      resourceManager:"Steve Rogers", scheduled:80,entered:72,lastEntry:"2025-06-13",projects:[{code:"PRJ-002",name:"UX Revamp"}]},
-  {id:"E003",name:"Carol White",   email:"carol.w@co.com",  dept:"Engineering", resourceManager:"Rachel Green", scheduled:80,entered:0, lastEntry:null,        projects:[{code:"PRJ-001",name:"Horizon Platform"},{code:"PRJ-005",name:"API Gateway"}]},
-  {id:"E004",name:"David Kim",     email:"david.k@co.com",  dept:"HR",          resourceManager:"Nina Patel",   scheduled:80,entered:80,lastEntry:"2025-06-15",projects:[{code:"PRJ-006",name:"HR Portal"}]},
-  {id:"E005",name:"Eva Chen",      email:"eva.c@co.com",    dept:"Finance",     resourceManager:"Marcus Webb",  scheduled:80,entered:64,lastEntry:"2025-06-12",projects:[{code:"PRJ-003",name:"Finance Suite"},{code:"PRJ-007",name:"Compliance Engine"}]},
-  {id:"E006",name:"Frank Patel",   email:"frank.p@co.com",  dept:"Engineering", resourceManager:"Rachel Green", scheduled:80,entered:0, lastEntry:null,        projects:[{code:"PRJ-001",name:"Horizon Platform"}]},
-  {id:"E007",name:"Grace Lee",     email:"grace.l@co.com",  dept:"Marketing",   resourceManager:"Steve Rogers", scheduled:80,entered:80,lastEntry:"2025-06-15",projects:[{code:"PRJ-008",name:"Brand Refresh"},{code:"PRJ-009",name:"Campaign Analytics"}]},
-  {id:"E008",name:"Henry Brown",   email:"henry.b@co.com",  dept:"Finance",     resourceManager:"Marcus Webb",  scheduled:80,entered:76,lastEntry:"2025-06-14",projects:[{code:"PRJ-003",name:"Finance Suite"}]},
-  {id:"E009",name:"Iris Nakamura", email:"iris.n@co.com",   dept:"Design",      resourceManager:"Steve Rogers", scheduled:80,entered:80,lastEntry:"2025-06-15",projects:[{code:"PRJ-002",name:"UX Revamp"},{code:"PRJ-010",name:"Design System"}]},
-  {id:"E010",name:"James Wilson",  email:"james.w@co.com",  dept:"HR",          resourceManager:"Nina Patel",   scheduled:80,entered:48,lastEntry:"2025-06-10",projects:[{code:"PRJ-006",name:"HR Portal"}]},
-  {id:"E011",name:"Karen Thomas",  email:"karen.t@co.com",  dept:"Engineering", resourceManager:"Rachel Green", scheduled:80,entered:80,lastEntry:"2025-06-15",projects:[{code:"PRJ-004",name:"Data Lake"},{code:"PRJ-005",name:"API Gateway"}]},
-  {id:"E012",name:"Leo Garcia",    email:"leo.g@co.com",    dept:"Marketing",   resourceManager:"Steve Rogers", scheduled:80,entered:0, lastEntry:null,        projects:[{code:"PRJ-008",name:"Brand Refresh"}]},
-];
-const MOCK_USERS=BASE_USERS.map(u=>({...u,history:makeHistory(u.projects,u.scheduled,u.entered),monthlyEntries:{}}));
 
 function parseExcelRows(rows){const byId=Object.create(null);rows.forEach(r=>{if(!r||typeof r!=="object")return;const id=r.empid||r.id||"";if(!byId[id])byId[id]={id,name:r.name||"",entered:0,scheduled:0};byId[id].entered+=Number(r.entered)||0;byId[id].scheduled+=Number(r.scheduled)||0;});return Object.values(byId);}
 function downloadTemplate(){const h=["EmpID","Name","Email","Department","ResourceManager","ProjectCode","ProjectName","ScheduledHours","EnteredHours","LastEntryDate"];const s=[["E001","Alice Johnson","alice.j@co.com","Engineering","Rachel Green","PRJ-001","Horizon Platform",80,80,"2025-06-14"]];const ws=XLSX.utils.aoa_to_sheet([h,...s]);ws["!cols"]=h.map(()=>({wch:20}));const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Timesheet_Template");XLSX.writeFile(wb,"Timesheet_Import_Template.xlsx");}
@@ -835,22 +820,6 @@ function LoginScreen({onLogin}){
           <div style={{marginTop:14,background:"#1c2a1c",border:"1px solid #393939",padding:"12px 16px",fontSize:11,color:IBM.gray50,lineHeight:1.6}}>
             <b style={{color:IBM.orange40}}>&#9888; No SSO configured.</b> Using username/password mode.
             Add <code style={{color:IBM.blue60}}>VITE_GOOGLE_CLIENT_ID</code> to enable Google Sign-In.
-          </div>
-        )}
-        {!msalConfigured && (
-          <div style={{marginTop:10,background:"#1c1c1c",border:"1px solid #393939",padding:"12px 16px"}}>
-            <div style={{fontSize:10,fontWeight:600,color:IBM.gray50,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>Demo Accounts</div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:5}}>
-              {[["manager","manager123","Manager"],["alice.j","alice123","Employee"]].map(function(item){
-                return (
-                  <button key={item[0]} onClick={function(){setUn(item[0]);setPw(item[1]);setErr("");setMode("password");}}
-                    style={{background:"#262626",border:"1px solid #393939",color:IBM.gray30,padding:"7px 10px",cursor:"pointer",textAlign:"left",fontSize:11}}>
-                    <b style={{color:item[2].startsWith("M")?IBM.blue60:IBM.gray20}}>{item[0]}</b>
-                    <div style={{color:IBM.gray60,fontSize:10,marginTop:2}}>{item[2]} · {item[1]}</div>
-                  </button>
-                );
-              })}
-            </div>
           </div>
         )}
       </div>
@@ -5521,7 +5490,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
       localStorage.setItem("tsm_billRateDB",         JSON.stringify(billRateDB));
       localStorage.setItem("tsm_expectedBillRateDB", JSON.stringify(expectedBillRateDB));
       localStorage.setItem("tsm_invoices",           JSON.stringify(invoices));
-      // Only persist users if they contain real imported data (not the MOCK_USERS demo set)
+      // Only persist users if they contain real imported data
       if(users.some(function(u){ return u.dataSource; })){
         localStorage.setItem("tsm_records",           JSON.stringify(users));
         localStorage.setItem("tsm_isImported",      JSON.stringify(isImported));
@@ -5709,7 +5678,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
   function handleRestoreFresh(){
     setBillRateDB([]); setExpectedBillRateDB([]); setInvoices([]);
     setCalendarEvents([]); setManualMatches({});
-    setUsers(MOCK_USERS); setSavedClarityRecs([]); setIsImported(false); setImportedMonths([]);
+    setUsers([]); setSavedClarityRecs([]); setIsImported(false); setImportedMonths([]);
     try{
       ["tsm_billRateDB","tsm_expectedBillRateDB","tsm_invoices","tsm_saved_at",
        "tsm_records","tsm_isImported","tsm_importedMonths","tsm_savedClarityRecs","tsm_manualMatches","tsm_session_name"
@@ -5722,7 +5691,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
   // ── Clear all imported records ───────────────────────────────────────────────
   const[confirmClearRecords, setConfirmClearRecords] = useState(false);
   function handleClearRecords(){
-    setUsers(MOCK_USERS); setSavedClarityRecs([]); setIsImported(false); setImportedMonths([]);
+    setUsers([]); setSavedClarityRecs([]); setIsImported(false); setImportedMonths([]);
     setManualMatches({});
     try{
       ["tsm_records","tsm_isImported","tsm_importedMonths","tsm_savedClarityRecs","tsm_manualMatches"].forEach(function(k){ localStorage.removeItem(k); });
@@ -6168,7 +6137,15 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
       {/* DASHBOARD */}
       {activeTab==="dashboard"&&(
         <React.Fragment>
-          <div className="dash-variance-bar" style={{margin:"0 28px 1px",background:IBM.gray100,padding:"14px 20px",display:"flex",alignItems:"center",gap:0,flexWrap:"wrap"}}>
+          {users.length===0&&(
+            <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"80px 28px",textAlign:"center"}}>
+              <div style={{fontSize:48,marginBottom:16,opacity:0.25}}>📊</div>
+              <div style={{fontSize:20,fontWeight:300,color:IBM.gray70,marginBottom:8}}>No data imported yet</div>
+              <div style={{fontSize:13,color:IBM.gray50,marginBottom:24,maxWidth:400}}>Import an IBM timesheet export or Clarity export to see your dashboard overview, variance analysis, and billing summary.</div>
+              <button onClick={function(){setActiveTab("records");}} style={{padding:"10px 24px",background:IBM.blue60,color:"#fff",border:"none",cursor:"pointer",fontSize:13,fontWeight:600}}>↑ Go to Records &amp; Import</button>
+            </div>
+          )}
+          {users.length>0&&(<React.Fragment><div className="dash-variance-bar" style={{margin:"0 28px 1px",background:IBM.gray100,padding:"14px 20px",display:"flex",alignItems:"center",gap:0,flexWrap:"wrap"}}>
             {(function(){
               var _amk = selMonth + "-" + selYear;
               // Only matched (Both) records for variance — IBM-only/Clarity-only are separate buckets
@@ -6324,6 +6301,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
               )}
             </div>
           </div>
+          </React.Fragment>)}
         </React.Fragment>
       )}
 
@@ -6581,7 +6559,14 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
               </tbody>
             </table>
           </div>
-          {filtered.length===0&&<div style={{textAlign:"center",padding:"48px",color:IBM.gray50,fontSize:13}}>No records match your filter.</div>}
+          {users.length===0&&(
+            <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"80px 28px",textAlign:"center"}}>
+              <div style={{fontSize:48,marginBottom:16,opacity:0.25}}>📂</div>
+              <div style={{fontSize:20,fontWeight:300,color:IBM.gray70,marginBottom:8}}>No records imported yet</div>
+              <div style={{fontSize:13,color:IBM.gray50,marginBottom:24,maxWidth:400}}>Use the <strong>↑ Import IBM</strong> or <strong>↑ Import Clarity</strong> buttons above to load timesheet data.</div>
+            </div>
+          )}
+          {users.length>0&&filtered.length===0&&<div style={{textAlign:"center",padding:"48px",color:IBM.gray50,fontSize:13}}>No records match your filter.</div>}
         </div>
       )}
 
@@ -6810,7 +6795,7 @@ export default function App(){
       // Only use saved if it has real imported records (dataSource field present)
       if(saved&&saved.length>0&&saved.some(function(u){return u.dataSource;})) return saved;
     }catch(e){}
-    return MOCK_USERS;
+    return [];
   });
   const[calendarEvents,setCalendarEvents]=useState([
     {id:1,date:`${new Date().getFullYear()}-${String(new Date().getMonth()+1).padStart(2,"0")}-05`,type:"offshore",label:"Offshore Holiday – Mumbai"},
