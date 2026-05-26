@@ -131,8 +131,9 @@ var MSAL_TENANT_ID   = (typeof window!=="undefined"&&window.MSAL_TENANT_ID)   ||
 var MSAL_REDIRECT_URI= (typeof window!=="undefined"&&window.MSAL_REDIRECT_URI)|| window.location.origin;
 
 // ─── SUPABASE CONFIG (optional — for shared user role storage) ────────────────
-var SUPABASE_URL      = (typeof window!=="undefined"&&window.SUPABASE_URL)      || "";
-var SUPABASE_ANON_KEY = (typeof window!=="undefined"&&window.SUPABASE_ANON_KEY) || "";
+// Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in your Vercel / .env.local file
+var SUPABASE_URL      = (typeof import.meta!=="undefined"&&import.meta.env&&import.meta.env.VITE_SUPABASE_URL)      || (typeof window!=="undefined"&&window.SUPABASE_URL)      || "";
+var SUPABASE_ANON_KEY = (typeof import.meta!=="undefined"&&import.meta.env&&import.meta.env.VITE_SUPABASE_ANON_KEY) || (typeof window!=="undefined"&&window.SUPABASE_ANON_KEY) || "";
 
 function isMSALConfigured(){
   return MSAL_CLIENT_ID && MSAL_CLIENT_ID !== "YOUR_CLIENT_ID_HERE";
@@ -3566,6 +3567,7 @@ function UserManagementTab({session, showToast}) {
   const[changePwFor, setChangePwFor] = useState(null); // user id for pw change
   const[newPw,    setNewPw]    = useState("");
   const[newPw2,   setNewPw2]   = useState("");
+  const[showSupabaseHelp, setShowSupabaseHelp] = useState(false);
   const[form, setForm] = useState({
     username:"", full_name:"", email:"", dept:"", emp_id:"", role:"user", password:"", password2:""
   });
@@ -3798,7 +3800,12 @@ function UserManagementTab({session, showToast}) {
           <div style={{fontSize:12,color:IBM.gray60,marginTop:3}}>
             {supOK
               ? <span style={{color:IBM.green50}}>&#9679; Connected to Supabase — users shared across all devices</span>
-              : <span style={{color:IBM.orange40}}>&#9679; Local mode — users stored in this browser only. <a href="#" onClick={function(e){e.preventDefault();alert("Set SUPABASE_URL and SUPABASE_ANON_KEY in your deployment environment variables.");}} style={{color:IBM.blue60}}>Configure Supabase</a></span>
+              : <span style={{color:IBM.orange40}}>&#9679; Local mode — users stored in this browser only.{" "}
+                  <button onClick={function(){ setShowSupabaseHelp(function(p){return !p;}); }}
+                    style={{background:"none",border:"none",padding:0,color:IBM.blue60,cursor:"pointer",fontSize:12,textDecoration:"underline",fontFamily:"inherit"}}>
+                    Configure Supabase
+                  </button>
+                </span>
             }
           </div>
         </div>
@@ -3806,6 +3813,54 @@ function UserManagementTab({session, showToast}) {
           + Add User
         </button>
       </div>
+
+      {/* Supabase setup guide */}
+      {showSupabaseHelp&&(
+        <div style={{marginBottom:16,background:"#f0f4ff",border:"1px solid "+IBM.blue20,padding:"16px 20px",fontSize:13,lineHeight:1.6,position:"relative"}}>
+          <button onClick={function(){setShowSupabaseHelp(false);}} style={{position:"absolute",top:10,right:12,background:"none",border:"none",fontSize:16,cursor:"pointer",color:IBM.gray60}}>&#x2715;</button>
+          <div style={{fontWeight:700,fontSize:14,color:IBM.blue70,marginBottom:10}}>🔧 How to connect Supabase (one-time setup)</div>
+          <div style={{display:"grid",gridTemplateColumns:"auto 1fr",gap:"6px 16px",alignItems:"start"}}>
+            <span style={{fontWeight:700,color:IBM.blue60}}>Step 1</span>
+            <span>Go to <a href="https://supabase.com" target="_blank" rel="noreferrer" style={{color:IBM.blue60}}>supabase.com</a> → create a free project (takes ~2 min)</span>
+            <span style={{fontWeight:700,color:IBM.blue60}}>Step 2</span>
+            <span>In your Supabase project → <b>Project Settings → API</b> → copy <b>Project URL</b> and <b>anon public</b> key</span>
+            <span style={{fontWeight:700,color:IBM.blue60}}>Step 3</span>
+            <div>
+              Go to your <a href="https://vercel.com/dashboard" target="_blank" rel="noreferrer" style={{color:IBM.blue60}}>Vercel project</a> → <b>Settings → Environment Variables</b> → add these two:
+              <div style={{marginTop:8,display:"flex",flexDirection:"column",gap:6}}>
+                <div style={{background:"#fff",border:"1px solid "+IBM.gray20,padding:"8px 12px",fontFamily:FF_MONO,fontSize:12,display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+                  <span style={{fontWeight:700,color:IBM.blue70,minWidth:220}}>VITE_SUPABASE_URL</span>
+                  <span style={{color:IBM.gray60}}>https://xxxxxxxxxxxx.supabase.co</span>
+                </div>
+                <div style={{background:"#fff",border:"1px solid "+IBM.gray20,padding:"8px 12px",fontFamily:FF_MONO,fontSize:12,display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+                  <span style={{fontWeight:700,color:IBM.blue70,minWidth:220}}>VITE_SUPABASE_ANON_KEY</span>
+                  <span style={{color:IBM.gray60}}>eyJhbGciOiJIUzI1NiIs… (long JWT)</span>
+                </div>
+              </div>
+            </div>
+            <span style={{fontWeight:700,color:IBM.blue60}}>Step 4</span>
+            <span>In Supabase → <b>SQL Editor</b> → run the schema below, then redeploy on Vercel</span>
+          </div>
+          <div style={{marginTop:12,background:"#fff",border:"1px solid "+IBM.gray20,padding:"10px 14px",fontFamily:FF_MONO,fontSize:11,color:IBM.gray80,whiteSpace:"pre",overflowX:"auto"}}{...{}}>
+{`create table if not exists tsm_users (
+  id          text primary key default gen_random_uuid()::text,
+  username    text unique not null,
+  password_hash text not null,
+  role        text not null default 'user',
+  full_name   text,
+  email       text,
+  dept        text,
+  emp_id      text,
+  is_active   boolean default true,
+  created_at  timestamptz default now()
+);
+-- Allow anon reads/writes (the app handles auth itself)
+alter table tsm_users enable row level security;
+create policy "allow all" on tsm_users for all using (true) with check (true);`}
+          </div>
+          <div style={{marginTop:10,fontSize:12,color:IBM.gray60}}>Once the env vars are set and Vercel redeployed, this page will show <span style={{color:IBM.green50,fontWeight:700}}>● Connected to Supabase</span>. Users you add here will be shared across all browsers and devices.</div>
+        </div>
+      )}
 
       {/* Search */}
       <div style={{marginBottom:14,display:"flex",alignItems:"center",gap:8,background:IBM.gray10,border:"1px solid "+IBM.gray20,padding:"6px 12px",maxWidth:340}}>
