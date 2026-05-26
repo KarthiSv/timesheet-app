@@ -135,6 +135,10 @@ var MSAL_REDIRECT_URI= (typeof window!=="undefined"&&window.MSAL_REDIRECT_URI)||
 var SUPABASE_URL      = (typeof import.meta!=="undefined"&&import.meta.env&&import.meta.env.VITE_SUPABASE_URL)      || (typeof window!=="undefined"&&window.SUPABASE_URL)      || "";
 var SUPABASE_ANON_KEY = (typeof import.meta!=="undefined"&&import.meta.env&&import.meta.env.VITE_SUPABASE_ANON_KEY) || (typeof window!=="undefined"&&window.SUPABASE_ANON_KEY) || "";
 
+// ─── GOOGLE SIGN-IN CONFIG (optional) ─────────────────────────────────────────
+// Set VITE_GOOGLE_CLIENT_ID in your Vercel / .env.local file
+var GOOGLE_CLIENT_ID  = (typeof import.meta!=="undefined"&&import.meta.env&&import.meta.env.VITE_GOOGLE_CLIENT_ID)  || "";
+
 function isMSALConfigured(){
   return MSAL_CLIENT_ID && MSAL_CLIENT_ID !== "YOUR_CLIENT_ID_HERE";
 }
@@ -590,7 +594,9 @@ function LoginScreen({onLogin}){
   const[err,setErr]=useState("");
   const[loading,setLoading]=useState(false);
   const[msalReady,setMsalReady]=useState(false);
+  const[gsiReady,setGsiReady]=useState(false);
   const[mode,setMode]=useState("sso"); // "sso" | "password"
+  const googleBtnRef = useRef(null);
 
   // Check if MSAL SDK is loaded
   React.useEffect(function(){
@@ -601,6 +607,78 @@ function LoginScreen({onLogin}){
     }, 300);
     return function(){ clearInterval(t); };
   }, []);
+
+  // Initialize Google Identity Services when script loads
+  React.useEffect(function(){
+    if (!GOOGLE_CLIENT_ID) return;
+    var tries = 0;
+    var t = setInterval(function(){
+      if (window.google && window.google.accounts && window.google.accounts.id) {
+        clearInterval(t);
+        window.google.accounts.id.initialize({
+          client_id: GOOGLE_CLIENT_ID,
+          callback: handleGoogleCredential,
+          auto_select: false,
+          cancel_on_tap_outside: true,
+          ux_mode: "popup",
+        });
+        setGsiReady(true);
+      }
+      if (++tries > 30) clearInterval(t);
+    }, 300);
+    return function(){ clearInterval(t); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Render the Google-hosted button into the ref div whenever it becomes visible
+  React.useEffect(function(){
+    if (!gsiReady || !googleBtnRef.current || mode === "password") return;
+    try {
+      window.google.accounts.id.renderButton(googleBtnRef.current, {
+        theme: "filled_black",
+        size: "large",
+        text: "signin_with",
+        shape: "rectangular",
+        width: 384,
+        logo_alignment: "left",
+      });
+    } catch(e) {}
+  }, [gsiReady, mode]);
+
+  // Google sign-in credential callback
+  function handleGoogleCredential(response) {
+    try {
+      // Decode the JWT payload (Google already verified the signature server-side)
+      var parts   = response.credential.split(".");
+      var payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+      var email   = payload.email   || "";
+      var name    = payload.name    || email;
+      var picture = payload.picture || "";
+      if (!payload.email_verified) {
+        setErr("Google account email is not verified. Please verify your Google email first.");
+        return;
+      }
+      setErr(""); setLoading(true);
+      resolveRoleForEmail(email).then(function(roleInfo){
+        setLoading(false);
+        onLogin({
+          username:      email.split("@")[0].toLowerCase(),
+          name:          name,
+          email:         email,
+          role:          roleInfo.role,
+          empId:         roleInfo.empId  || "",
+          dept:          roleInfo.dept   || "",
+          userId:        roleInfo.userId || null,
+          googleProfile: { email, name, picture },
+        });
+      }).catch(function(ex){
+        setLoading(false);
+        setErr("Google login error: " + (ex.message || "Please try again."));
+      });
+    } catch(ex) {
+      setErr("Failed to process Google sign-in. Please try again.");
+    }
+  }
 
   // Handle Microsoft SSO login
   function handleMSAL() {
@@ -652,7 +730,9 @@ function LoginScreen({onLogin}){
     });
   }
 
-  var msalConfigured = isMSALConfigured();
+  var msalConfigured  = isMSALConfigured();
+  var googleConfigured = !!GOOGLE_CLIENT_ID;
+  var hasSSOOption    = msalConfigured || googleConfigured;
 
   return(
     <div style={{minHeight:"100vh",background:"#161616",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:FF_SANS}}>
@@ -668,29 +748,44 @@ function LoginScreen({onLogin}){
           <div style={{background:IBM.blue60,padding:"18px 28px"}}>
             <div style={{fontSize:17,fontWeight:600,color:"#fff"}}>Sign In</div>
             <div style={{fontSize:12,color:"#a6c8ff",marginTop:3}}>
-              {msalConfigured ? "Use your IBM Microsoft account" : "Enter your credentials"}
+              {hasSSOOption ? "Use your organisation account" : "Enter your credentials"}
             </div>
           </div>
 
           <div style={{padding:"28px"}}>
-            {/* Microsoft SSO Button */}
-            {msalConfigured && mode==="sso" && (
+            {/* SSO Buttons (Google + Microsoft) */}
+            {hasSSOOption && mode==="sso" && (
               <React.Fragment>
-                <button onClick={handleMSAL} disabled={loading||!msalReady}
-                  style={{width:"100%",padding:"13px 16px",background:loading?"#444":"#2f2f2f",color:"#fff",border:"1px solid #555",cursor:loading||!msalReady?"not-allowed":"pointer",fontSize:14,fontWeight:600,display:"flex",alignItems:"center",justifyContent:"center",gap:12,marginBottom:16,fontFamily:FF_SANS}}>
-                  {/* Microsoft logo SVG */}
-                  {!loading && (
-                    <svg width="20" height="20" viewBox="0 0 21 21" xmlns="http://www.w3.org/2000/svg">
-                      <rect x="1" y="1" width="9" height="9" fill="#f25022"/>
-                      <rect x="11" y="1" width="9" height="9" fill="#7fba00"/>
-                      <rect x="1" y="11" width="9" height="9" fill="#00a4ef"/>
-                      <rect x="11" y="11" width="9" height="9" fill="#ffb900"/>
-                    </svg>
-                  )}
-                  {loading ? "Signing in…" : !msalReady ? "Loading…" : "Sign in with Microsoft"}
-                </button>
+                {/* Google Sign-In button (rendered by GSI library) */}
+                {googleConfigured && (
+                  <div style={{marginBottom:12}}>
+                    {gsiReady
+                      ? <div ref={googleBtnRef} style={{width:"100%",minHeight:44}}/>
+                      : <div style={{width:"100%",height:44,background:"#2f2f2f",border:"1px solid #555",display:"flex",alignItems:"center",justifyContent:"center",gap:10,color:IBM.gray50,fontSize:13}}>
+                          <svg width="18" height="18" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+                          Loading Google Sign-In…
+                        </div>
+                    }
+                  </div>
+                )}
 
-                <div style={{textAlign:"center",marginBottom:16}}>
+                {/* Microsoft SSO Button */}
+                {msalConfigured && (
+                  <button onClick={handleMSAL} disabled={loading||!msalReady}
+                    style={{width:"100%",padding:"13px 16px",background:loading?"#444":"#2f2f2f",color:"#fff",border:"1px solid #555",cursor:loading||!msalReady?"not-allowed":"pointer",fontSize:14,fontWeight:600,display:"flex",alignItems:"center",justifyContent:"center",gap:12,marginBottom:12,fontFamily:FF_SANS}}>
+                    {!loading && (
+                      <svg width="20" height="20" viewBox="0 0 21 21" xmlns="http://www.w3.org/2000/svg">
+                        <rect x="1" y="1" width="9" height="9" fill="#f25022"/>
+                        <rect x="11" y="1" width="9" height="9" fill="#7fba00"/>
+                        <rect x="1" y="11" width="9" height="9" fill="#00a4ef"/>
+                        <rect x="11" y="11" width="9" height="9" fill="#ffb900"/>
+                      </svg>
+                    )}
+                    {loading ? "Signing in…" : !msalReady ? "Loading…" : "Sign in with Microsoft"}
+                  </button>
+                )}
+
+                <div style={{textAlign:"center",marginBottom:16,marginTop:4}}>
                   <span style={{fontSize:11,color:IBM.gray60}}>or </span>
                   <button onClick={function(){setMode("password");setErr("");}} style={{background:"none",border:"none",color:IBM.blue60,cursor:"pointer",fontSize:11,textDecoration:"underline",padding:0}}>
                     use username &amp; password
@@ -700,12 +795,12 @@ function LoginScreen({onLogin}){
             )}
 
             {/* Username/password form */}
-            {(!msalConfigured || mode==="password") && (
+            {(!hasSSOOption || mode==="password") && (
               <React.Fragment>
-                {msalConfigured && (
+                {hasSSOOption && (
                   <div style={{marginBottom:16,display:"flex",alignItems:"center",gap:8}}>
                     <button onClick={function(){setMode("sso");setErr("");}} style={{background:"none",border:"none",color:IBM.blue60,cursor:"pointer",fontSize:12,textDecoration:"underline",padding:0}}>
-                      &#8592; Back to Microsoft login
+                      &#8592; Back to sign-in options
                     </button>
                   </div>
                 )}
@@ -736,10 +831,10 @@ function LoginScreen({onLogin}){
         </div>
 
         {/* Setup notice */}
-        {!msalConfigured && (
+        {!hasSSOOption && (
           <div style={{marginTop:14,background:"#1c2a1c",border:"1px solid #393939",padding:"12px 16px",fontSize:11,color:IBM.gray50,lineHeight:1.6}}>
-            <b style={{color:IBM.orange40}}>&#9888; Microsoft SSO not configured.</b> Using username/password mode.
-            See SECURITY.md for how to connect Azure AD.
+            <b style={{color:IBM.orange40}}>&#9888; No SSO configured.</b> Using username/password mode.
+            Add <code style={{color:IBM.blue60}}>VITE_GOOGLE_CLIENT_ID</code> to enable Google Sign-In.
           </div>
         )}
         {!msalConfigured && (
