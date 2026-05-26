@@ -5295,7 +5295,7 @@ function BillRateTab({users, billRateDB, setBillRateDB, expectedBillRateDB, setE
 }
 
 // ─── SESSION RESTORE MODAL ────────────────────────────────────────────────────
-function SessionRestoreModal({ onLoadFile, onContinue, onStartFresh, savedAt, hasBillRate, hasInvoices, hasUsers }){
+function SessionRestoreModal({ onLoadFile, onContinue, onStartFresh, savedAt, hasBillRate, hasInvoices, hasUsers, savedSessionName }){
   var inputRef = useRef(null);
   var [loading, setLoading] = useState(false);
   var [err, setErr] = useState("");
@@ -5339,7 +5339,7 @@ function SessionRestoreModal({ onLoadFile, onContinue, onStartFresh, savedAt, ha
           {/* Saved data summary (only when data exists) */}
           {hasSaved&&(
             <div style={{background:IBM.blue10,border:"1px solid "+IBM.blue20,padding:"10px 14px",marginBottom:18,fontSize:12,borderRadius:2}}>
-              <div style={{fontWeight:700,color:IBM.blue70,marginBottom:5}}>💾 Saved session found:</div>
+              <div style={{fontWeight:700,color:IBM.blue70,marginBottom:5}}>💾 Saved session found{savedSessionName?" — \""+savedSessionName+"\"":""}:</div>
               {items.map(function(it,i){ return (
                 <div key={i} style={{color:IBM.gray70,marginTop:2,display:"flex",alignItems:"center",gap:6}}>
                   <span style={{color:IBM.green50,fontWeight:700}}>✓</span> {it}
@@ -5363,14 +5363,14 @@ function SessionRestoreModal({ onLoadFile, onContinue, onStartFresh, savedAt, ha
             </button>
           )}
 
-          {/* Option 2: Load from JSON file */}
+          {/* Option 2: Load from JSON file (named session or DB file) */}
           <button onClick={function(){ inputRef.current&&inputRef.current.click(); }}
             disabled={loading}
             style={{width:"100%",padding:"14px 16px",background:"#fff",color:IBM.gray100,border:"2px solid "+IBM.gray30,cursor:"pointer",fontSize:14,fontWeight:600,marginBottom:10,textAlign:"left",display:"flex",alignItems:"center",gap:12,borderRadius:2}}>
             <span style={{fontSize:20}}>📂</span>
             <div>
               <div>{loading?"Loading…":"Load session from file"}</div>
-              <div style={{fontSize:11,fontWeight:400,color:IBM.gray60,marginTop:2}}>Open your saved TimesheetManager_DB.json file</div>
+              <div style={{fontSize:11,fontWeight:400,color:IBM.gray60,marginTop:2}}>Open a named <code style={{background:IBM.gray10,padding:"1px 4px",fontFamily:FF_MONO,fontSize:10}}>TSM_*.json</code> snapshot or your <code style={{background:IBM.gray10,padding:"1px 4px",fontFamily:FF_MONO,fontSize:10}}>TimesheetManager_DB.json</code> folder file</div>
             </div>
           </button>
           <input ref={inputRef} type="file" accept=".json" style={{display:"none"}} onChange={handleFile}/>
@@ -5497,6 +5497,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
   var hasSavedUsers     = users.some(function(u){ return u.dataSource; }); // true only if real imported data loaded
   var hasSavedData      = hasSavedBillRate||hasSavedInvoices||hasSavedUsers;
   var savedAt           = (function(){ try{ return localStorage.getItem("tsm_saved_at")||""; }catch(e){return "";} })();
+  var savedSessionName  = (function(){ try{ return localStorage.getItem("tsm_session_name")||""; }catch(e){return "";} })();
   // Always show on login so user consciously picks Load / Continue / Fresh
   const[showRestoreModal,setShowRestoreModal] = useState(true);
 
@@ -5696,8 +5697,10 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
     if(db.savedClarityRecs)                    setSavedClarityRecs(db.savedClarityRecs);
     if(db.isImported!=null)                    setIsImported(db.isImported);
     if(db.importedMonths&&db.importedMonths.length>0) setImportedMonths(db.importedMonths);
+    // Persist session name so it shows in the next login modal
+    if(db.sessionName) try{ localStorage.setItem("tsm_session_name", db.sessionName); }catch(e){}
     setShowRestoreModal(false);
-    showToast("✓ Session restored from file");
+    showToast("✓ Session"+(db.sessionName?" \""+db.sessionName+"\"":" ")+"restored from file");
   }
   function handleRestoreContinue(){
     setShowRestoreModal(false);
@@ -5709,12 +5712,51 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
     setUsers(MOCK_USERS); setSavedClarityRecs([]); setIsImported(false); setImportedMonths([]);
     try{
       ["tsm_billRateDB","tsm_expectedBillRateDB","tsm_invoices","tsm_saved_at",
-       "tsm_records","tsm_isImported","tsm_importedMonths","tsm_savedClarityRecs","tsm_manualMatches"
+       "tsm_records","tsm_isImported","tsm_importedMonths","tsm_savedClarityRecs","tsm_manualMatches","tsm_session_name"
       ].forEach(function(k){ localStorage.removeItem(k); });
     }catch(e){}
     setShowRestoreModal(false);
     showToast("Started fresh session");
   }
+
+  // ── Clear all imported records ───────────────────────────────────────────────
+  const[confirmClearRecords, setConfirmClearRecords] = useState(false);
+  function handleClearRecords(){
+    setUsers(MOCK_USERS); setSavedClarityRecs([]); setIsImported(false); setImportedMonths([]);
+    setManualMatches({});
+    try{
+      ["tsm_records","tsm_isImported","tsm_importedMonths","tsm_savedClarityRecs","tsm_manualMatches"].forEach(function(k){ localStorage.removeItem(k); });
+    }catch(e){}
+    setConfirmClearRecords(false);
+    showToast("Records cleared — ready for fresh import");
+  }
+
+  // ── Named session save/load ──────────────────────────────────────────────────
+  const[sessionSaveName, setSessionSaveName] = useState("");
+  function downloadSession(name){
+    var safeName = (name||"Session").replace(/[^a-zA-Z0-9_\-. ]/g,"").trim().replace(/\s+/g,"_") || "Session";
+    var db = {
+      sessionName: name || "Unnamed Session",
+      savedAt: new Date().toISOString(),
+      version: "1.1",
+      billRateDB, expectedBillRateDB, invoices, calendarEvents, manualMatches,
+      mgrName, mgrEmail, mgrDept,
+      users: users.some(function(u){return u.dataSource;}) ? users : undefined,
+      savedClarityRecs, isImported, importedMonths,
+    };
+    var blob = new Blob([JSON.stringify(db, null, 2)], {type:"application/json"});
+    var url  = URL.createObjectURL(blob);
+    var a    = document.createElement("a");
+    a.href     = url;
+    a.download = "TSM_" + safeName + "_" + new Date().toISOString().slice(0,10) + ".json";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    try{ localStorage.setItem("tsm_session_name", name||""); }catch(e){}
+    showToast("✓ Saved as TSM_" + safeName + "…json");
+  }
+
   const handleImport=function(data, mergedInfo, clarityRecsFromImport) {
     // Save clarity records for use in Re-link dropdown outside import modal
     if (clarityRecsFromImport) setSavedClarityRecs(clarityRecsFromImport);
@@ -6316,6 +6358,14 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
                     <button onClick={function(){setShowNameMatch(true);}} style={{padding:"5px 12px",background:IBM.orange40,border:"none",color:"#fff",cursor:"pointer",fontSize:11,fontWeight:700}}>&#9888; Fix ({ibmOnlyCount+clarityOnlyCount})</button>
                   ):null;
                 })()}
+                {isImported&&(confirmClearRecords
+                  ? <span style={{display:"flex",alignItems:"center",gap:4}}>
+                      <span style={{fontSize:10,color:IBM.red60,fontWeight:600,whiteSpace:"nowrap"}}>Clear all records?</span>
+                      <button onClick={handleClearRecords} style={{padding:"4px 8px",background:IBM.red60,color:"#fff",border:"none",cursor:"pointer",fontSize:10,fontWeight:700}}>Yes, clear</button>
+                      <button onClick={function(){setConfirmClearRecords(false);}} style={{padding:"4px 7px",background:"none",border:"1px solid "+IBM.gray30,color:IBM.gray60,cursor:"pointer",fontSize:10}}>Cancel</button>
+                    </span>
+                  : <button onClick={function(){setConfirmClearRecords(true);}} style={{padding:"5px 10px",background:"#fff",border:"1px solid "+IBM.red60,color:IBM.red60,cursor:"pointer",fontSize:11,fontWeight:600}}>🗑 Clear</button>
+                )}
                 <button onClick={function(){showToast("✓ Records refreshed — showing latest data");}} style={{padding:"5px 12px",background:"#fff",border:"1px solid "+IBM.teal50,color:IBM.teal50,cursor:"pointer",fontSize:11,fontWeight:600}}>&#x21bb; Refresh</button>
                 <button onClick={function(){handleExportFull(filtered, showAllMonths ? "All" : selMonth+"-"+selYear);}} style={{padding:"5px 12px",background:IBM.blue60,color:"#fff",border:"none",cursor:"pointer",fontSize:11,fontWeight:600}}>&#8595; Export ({filtered.length})</button>
                 <button onClick={function(){downloadConsolidated(users,monthLabel,periodLabel);}} style={{padding:"5px 12px",background:"#fff",border:"1px solid "+IBM.gray30,color:IBM.gray70,cursor:"pointer",fontSize:11}}>Legacy Export</button>
@@ -6568,6 +6618,79 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
               <button onClick={()=>{setMgrSaved(true);showToast("✓ Profile saved");}} style={{padding:"10px 28px",background:IBM.blue60,color:"#fff",border:"none",cursor:"pointer",fontSize:13,fontWeight:600}}>Save Profile</button>
             </div>
           </div>
+          {/* ── Session Manager ────────────────────────────────────────── */}
+          <div style={{background:"#fff",border:`1px solid ${IBM.gray20}`,marginBottom:20}}>
+            <div style={{background:"#1a3a5c",color:"#fff",padding:"14px 20px",display:"flex",alignItems:"center",gap:10}}>
+              <span style={{fontSize:18}}>💾</span>
+              <div>
+                <div style={{fontSize:14,fontWeight:600}}>Session Manager</div>
+                <div style={{fontSize:11,color:"#a6c8ff",marginTop:1}}>Save named snapshots of all data — Records, Bill Rates, Invoices — and reload them any time</div>
+              </div>
+            </div>
+            <div style={{padding:"20px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:20}}>
+
+              {/* SAVE */}
+              <div>
+                <div style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.07em",color:IBM.gray70,marginBottom:10}}>💾 Save Session</div>
+                <label style={{fontSize:11,color:IBM.gray60,display:"block",marginBottom:5}}>Session name <span style={{color:IBM.gray40}}>(e.g. "April 2026", "Q1 Review")</span></label>
+                <input
+                  value={sessionSaveName}
+                  onChange={function(e){setSessionSaveName(e.target.value);}}
+                  placeholder="Enter a name for this session…"
+                  style={{width:"100%",padding:"9px 12px",border:`1px solid ${IBM.gray30}`,fontSize:13,outline:"none",fontFamily:"inherit",marginBottom:10,boxSizing:"border-box"}}
+                />
+                <button
+                  onClick={function(){
+                    if(!sessionSaveName.trim()){ showToast("Please enter a session name first","error"); return; }
+                    downloadSession(sessionSaveName.trim());
+                  }}
+                  style={{padding:"10px 20px",background:"#1a3a5c",color:"#fff",border:"none",cursor:"pointer",fontSize:13,fontWeight:600,width:"100%"}}>
+                  ⬇ Download Session File
+                </button>
+                <div style={{marginTop:8,fontSize:11,color:IBM.gray50}}>
+                  Downloads <code style={{background:IBM.gray10,padding:"1px 4px"}}>TSM_[name]_[date].json</code> — keep it anywhere on your computer
+                </div>
+              </div>
+
+              {/* LOAD */}
+              <div>
+                <div style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.07em",color:IBM.gray70,marginBottom:10}}>📂 Load Session</div>
+                <div style={{fontSize:11,color:IBM.gray60,marginBottom:10,lineHeight:1.5}}>
+                  Pick a previously downloaded <code style={{background:IBM.gray10,padding:"1px 4px"}}>TSM_*.json</code> file to restore all data from that snapshot. <b style={{color:IBM.orange40}}>This replaces the current session.</b>
+                </div>
+                {(function(){
+                  var loadRef = React.createRef();
+                  return (
+                    <>
+                      <button
+                        onClick={function(){ loadRef.current&&loadRef.current.click(); }}
+                        style={{padding:"10px 20px",background:"#fff",color:"#1a3a5c",border:"2px solid #1a3a5c",cursor:"pointer",fontSize:13,fontWeight:600,width:"100%",marginBottom:8}}>
+                        📂 Choose Session File
+                      </button>
+                      <input ref={loadRef} type="file" accept=".json" style={{display:"none"}}
+                        onChange={function(e){
+                          var f=e.target.files[0]; if(!f) return;
+                          var reader=new FileReader();
+                          reader.onload=function(ev){
+                            try{
+                              var db=JSON.parse(ev.target.result);
+                              restoreFromDB(db);
+                              showToast("✓ Session "+(db.sessionName?"\""+db.sessionName+"\"":" ")+" loaded");
+                            }catch(ex){ showToast("Could not parse file: "+ex.message,"error"); }
+                          };
+                          reader.readAsText(f);
+                          e.target.value="";
+                        }}/>
+                    </>
+                  );
+                })()}
+                <div style={{fontSize:11,color:IBM.gray50,lineHeight:1.5}}>
+                  Works with both <code style={{background:IBM.gray10,padding:"1px 4px"}}>TSM_*.json</code> named sessions and the <code style={{background:IBM.gray10,padding:"1px 4px"}}>TimesheetManager_DB.json</code> folder file
+                </div>
+              </div>
+            </div>
+          </div>
+
           {/* Email log */}
           <div style={{background:"#fff",border:`1px solid ${IBM.gray20}`}}>
             <div style={{background:IBM.gray90,color:"#fff",padding:"12px 18px",display:"flex",justifyContent:"space-between"}}><span style={{fontSize:13,fontWeight:600}}>📬 Sent Log</span><span style={{fontSize:12,color:IBM.gray30}}>{emailLog.length} sent</span></div>
@@ -6581,7 +6704,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
       {showImport&&<ImportModal onImport={handleImport} onClose={()=>setShowImport(false)} odConnected={odConnected} lfsHandle={lfsHandle}/>}
       {showRestoreModal&&<SessionRestoreModal
         hasBillRate={hasSavedBillRate} hasInvoices={hasSavedInvoices} hasUsers={hasSavedUsers}
-        savedAt={savedAt}
+        savedAt={savedAt} savedSessionName={savedSessionName}
         onLoadFile={restoreFromDB}
         onContinue={handleRestoreContinue}
         onStartFresh={handleRestoreFresh}
