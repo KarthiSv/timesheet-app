@@ -139,7 +139,7 @@ function isMSALConfigured(){
 }
 
 // ─── LOCAL USER STORE (fallback when Supabase not configured) ─────────────────
-// Stored in localStorage as "tsm_users" JSON array
+// Stored in localStorage as "tsm_users" JSON array (login accounts — separate from tsm_records)
 function getLocalUsers() {
   try {
     var raw = localStorage.getItem("tsm_users");
@@ -5297,8 +5297,8 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
   const[selMonth,setSelMonth]=useState(MONTH_NAMES[now.getMonth()]);
   const[selYear,setSelYear]=useState(now.getFullYear());
   const[selPeriod,setSelPeriod]=useState("WM");
-  const[isImported,setIsImported]=useState(false);
-  const[importedMonths,setImportedMonths]=useState([]); // e.g. ["February-2026","March-2026"]
+  const[isImported,setIsImported]=useState(function(){ try{ return JSON.parse(localStorage.getItem("tsm_isImported")||"false"); }catch(e){ return false; } });
+  const[importedMonths,setImportedMonths]=useState(function(){ try{ return JSON.parse(localStorage.getItem("tsm_importedMonths")||"[]"); }catch(e){ return []; } }); // e.g. ["February-2026","March-2026"]
   const[showAllMonths,setShowAllMonths]=useState(true); // default to All Months view
   const[showImport,setShowImport]=useState(false);
   const[filterStatus,setFilterStatus]=useState("all");
@@ -5337,14 +5337,14 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
   const[mgrDept,setMgrDept]=useState(session.dept||"");
   const[mgrPhone,setMgrPhone]=useState("");
   const[mgrSaved,setMgrSaved]=useState(false);
-  const[savedClarityRecs,setSavedClarityRecs]=useState([]); // persisted after import for Re-link dropdown
+  const[savedClarityRecs,setSavedClarityRecs]=useState(function(){ try{ return JSON.parse(localStorage.getItem("tsm_savedClarityRecs")||"[]"); }catch(e){ return []; } }); // persisted after import for Re-link dropdown
   const[relinkUserId,setRelinkUserId]=useState(null); // normalizedName of row showing re-link dropdown in records table
-  const[manualMatches,setManualMatches]=useState({}); // {ibmNormName: clarityNormName} for re-linking in records table
+  const[manualMatches,setManualMatches]=useState(function(){ try{ return JSON.parse(localStorage.getItem("tsm_manualMatches")||"{}"); }catch(e){ return {}; } }); // {ibmNormName: clarityNormName} for re-linking in records table
 
   // ── Session restore modal — always show on login ─────────────────────────
   var hasSavedBillRate  = billRateDB.length>0;
   var hasSavedInvoices  = invoices.length>0;
-  var hasSavedUsers     = (function(){ try{ var u=JSON.parse(localStorage.getItem("tsm_users")||"[]"); return u.some(function(x){return x.dataSource||x.name;}); }catch(e){return false;} })();
+  var hasSavedUsers     = users.some(function(u){ return u.dataSource; }); // true only if real imported data loaded
   var hasSavedData      = hasSavedBillRate||hasSavedInvoices||hasSavedUsers;
   var savedAt           = (function(){ try{ return localStorage.getItem("tsm_saved_at")||""; }catch(e){return "";} })();
   // Always show on login so user consciously picks Load / Continue / Fresh
@@ -5370,22 +5370,36 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
       localStorage.setItem("tsm_billRateDB",         JSON.stringify(billRateDB));
       localStorage.setItem("tsm_expectedBillRateDB", JSON.stringify(expectedBillRateDB));
       localStorage.setItem("tsm_invoices",           JSON.stringify(invoices));
+      // Only persist users if they contain real imported data (not the MOCK_USERS demo set)
+      if(users.some(function(u){ return u.dataSource; })){
+        localStorage.setItem("tsm_records",           JSON.stringify(users));
+        localStorage.setItem("tsm_isImported",      JSON.stringify(isImported));
+        localStorage.setItem("tsm_importedMonths",  JSON.stringify(importedMonths));
+        localStorage.setItem("tsm_savedClarityRecs",JSON.stringify(savedClarityRecs));
+        localStorage.setItem("tsm_manualMatches",   JSON.stringify(manualMatches));
+      }
       localStorage.setItem("tsm_saved_at",           new Date().toISOString());
     }catch(e){}
-  },[billRateDB, expectedBillRateDB, invoices]);
+  },[billRateDB, expectedBillRateDB, invoices, users, isImported, importedMonths, savedClarityRecs, manualMatches]);
 
   const lfsSaveDB = useCallback(async function(){
     if(!lfsHandle) return;
     setLfsSyncing(true);
     try{
-      var db = {billRateDB, expectedBillRateDB, invoices, calendarEvents, manualMatches, mgrName, mgrEmail, mgrDept, savedAt:new Date().toISOString()};
+      var db = {
+        billRateDB, expectedBillRateDB, invoices, calendarEvents, manualMatches,
+        mgrName, mgrEmail, mgrDept, savedAt:new Date().toISOString(),
+        // Records tab data
+        users: users.some(function(u){return u.dataSource;}) ? users : undefined,
+        savedClarityRecs, isImported, importedMonths,
+      };
       await LFS.saveDatabase(lfsHandle, db);
       var ts = new Date().toLocaleTimeString();
       setLfsLastSync(ts); localStorage.setItem("lfs_last_sync", ts);
       showToast("✓ Database saved to "+lfsHandle.name);
     }catch(e){ showToast("Save failed: "+e.message,"error"); }
     setLfsSyncing(false);
-  },[lfsHandle, billRateDB, expectedBillRateDB, invoices, calendarEvents, manualMatches, mgrName, mgrEmail, mgrDept]);
+  },[lfsHandle, billRateDB, expectedBillRateDB, invoices, calendarEvents, manualMatches, mgrName, mgrEmail, mgrDept, users, savedClarityRecs, isImported, importedMonths]);
 
   const lfsLoadDB = useCallback(async function(silent){
     if(!lfsHandle) return;
@@ -5404,6 +5418,11 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
       if(db.mgrName)            setMgrName(db.mgrName);
       if(db.mgrEmail)           setMgrEmail(db.mgrEmail);
       if(db.mgrDept)            setMgrDept(db.mgrDept);
+      // Records tab data
+      if(db.users&&db.users.length>0)            setUsers(db.users);
+      if(db.savedClarityRecs)                    setSavedClarityRecs(db.savedClarityRecs);
+      if(db.isImported!=null)                    setIsImported(db.isImported);
+      if(db.importedMonths&&db.importedMonths.length>0) setImportedMonths(db.importedMonths);
       var ts = new Date().toLocaleTimeString();
       setLfsLastSync(ts); localStorage.setItem("lfs_last_sync", ts);
       setShowRestoreModal(false); // dismiss modal if folder auto-loaded data
@@ -5424,7 +5443,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
     }, 8000);
     return function(){ if(autoSaveTimer.current) clearTimeout(autoSaveTimer.current); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[lfsHandle, billRateDB, expectedBillRateDB, invoices, calendarEvents, manualMatches]);
+  },[lfsHandle, billRateDB, expectedBillRateDB, invoices, calendarEvents, manualMatches, users, savedClarityRecs, isImported, importedMonths]);
 
   // ── Auto-load from folder when folder is first connected ─────────────────
   const prevLfsHandleRef = useRef(null);
@@ -5461,6 +5480,9 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
         manualMatches,
         mgrName, mgrEmail, mgrDept,
         savedAt: new Date().toISOString(),
+        // Records tab data
+        users: users.some(function(u){return u.dataSource;}) ? users : undefined,
+        savedClarityRecs, isImported, importedMonths,
       }, extra||{});
       await OD.saveDatabase(db);
       var ts = new Date().toLocaleTimeString();
@@ -5470,7 +5492,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
       showToast("OneDrive save failed: "+e.message,"error");
     }
     setOdSyncing(false);
-  },[odConnected, billRateDB, expectedBillRateDB, invoices, calendarEvents, manualMatches, mgrName, mgrEmail, mgrDept]);
+  },[odConnected, billRateDB, expectedBillRateDB, invoices, calendarEvents, manualMatches, mgrName, mgrEmail, mgrDept, users, savedClarityRecs, isImported, importedMonths]);
 
   // ── OneDrive: load database helper ───────────────────────────────────────────
   const odLoadDB = useCallback(async function(){
@@ -5486,6 +5508,11 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
       if(db.mgrName)            setMgrName(db.mgrName);
       if(db.mgrEmail)           setMgrEmail(db.mgrEmail);
       if(db.mgrDept)            setMgrDept(db.mgrDept);
+      // Records tab data
+      if(db.users&&db.users.length>0)            setUsers(db.users);
+      if(db.savedClarityRecs)                    setSavedClarityRecs(db.savedClarityRecs);
+      if(db.isImported!=null)                    setIsImported(db.isImported);
+      if(db.importedMonths&&db.importedMonths.length>0) setImportedMonths(db.importedMonths);
       var ts = new Date().toLocaleTimeString();
       setOdLastSync(ts);
       localStorage.setItem("od_last_sync", ts);
@@ -5514,6 +5541,11 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
     if(db.mgrName)            setMgrName(db.mgrName);
     if(db.mgrEmail)           setMgrEmail(db.mgrEmail);
     if(db.mgrDept)            setMgrDept(db.mgrDept);
+    // Records tab data
+    if(db.users&&db.users.length>0)            setUsers(db.users);
+    if(db.savedClarityRecs)                    setSavedClarityRecs(db.savedClarityRecs);
+    if(db.isImported!=null)                    setIsImported(db.isImported);
+    if(db.importedMonths&&db.importedMonths.length>0) setImportedMonths(db.importedMonths);
     setShowRestoreModal(false);
     showToast("✓ Session restored from file");
   }
@@ -5524,8 +5556,11 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
   function handleRestoreFresh(){
     setBillRateDB([]); setExpectedBillRateDB([]); setInvoices([]);
     setCalendarEvents([]); setManualMatches({});
+    setUsers(MOCK_USERS); setSavedClarityRecs([]); setIsImported(false); setImportedMonths([]);
     try{
-      ["tsm_billRateDB","tsm_expectedBillRateDB","tsm_invoices","tsm_saved_at"].forEach(function(k){ localStorage.removeItem(k); });
+      ["tsm_billRateDB","tsm_expectedBillRateDB","tsm_invoices","tsm_saved_at",
+       "tsm_records","tsm_isImported","tsm_importedMonths","tsm_savedClarityRecs","tsm_manualMatches"
+      ].forEach(function(k){ localStorage.removeItem(k); });
     }catch(e){}
     setShowRestoreModal(false);
     showToast("Started fresh session");
@@ -6496,7 +6531,14 @@ function UserApp({session,onLogout,users,setUsers,calendarEvents}){
 // ─── ROOT APP ─────────────────────────────────────────────────────────────────
 export default function App(){
   const[session,setSession]=useState(null);
-  const[users,setUsers]=useState(MOCK_USERS);
+  const[users,setUsers]=useState(function(){
+    try{
+      var saved=JSON.parse(localStorage.getItem("tsm_records")||"null");
+      // Only use saved if it has real imported records (dataSource field present)
+      if(saved&&saved.length>0&&saved.some(function(u){return u.dataSource;})) return saved;
+    }catch(e){}
+    return MOCK_USERS;
+  });
   const[calendarEvents,setCalendarEvents]=useState([
     {id:1,date:`${new Date().getFullYear()}-${String(new Date().getMonth()+1).padStart(2,"0")}-05`,type:"offshore",label:"Offshore Holiday – Mumbai"},
     {id:2,date:`${new Date().getFullYear()}-${String(new Date().getMonth()+1).padStart(2,"0")}-15`,type:"deadline",label:"Q2 Timesheet Deadline"},
