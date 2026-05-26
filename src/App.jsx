@@ -567,9 +567,12 @@ async function resolveRoleForEmail(email) {
       return (u.email||"").toLowerCase() === normalizedEmail && u.is_active !== false;
     });
     if (match) return { role: match.role, empId: match.emp_id||"", dept: match.dept||"", userId: match.id };
-    // If no manager accounts exist yet (fresh setup), first SSO sign-in bootstraps as manager
-    var hasAnyManager = users.some(function(u){ return u.role === "manager" && u.is_active !== false; });
-    if (!hasAnyManager) return { role: "manager", empId: "", dept: "" };
+    // Bootstrap: if no manager has an email set yet (only seed/password accounts exist),
+    // the first SSO sign-in is treated as manager so the app owner can configure the app
+    var hasManagerWithEmail = users.some(function(u){
+      return u.role === "manager" && u.is_active !== false && (u.email||"").trim();
+    });
+    if (!hasManagerWithEmail) return { role: "manager", empId: "", dept: "" };
   } catch(e) {
     // On error, default to manager so the app owner can still access the app
     return { role: "manager", empId: "", dept: "" };
