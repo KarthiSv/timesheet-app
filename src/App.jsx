@@ -567,8 +567,14 @@ async function resolveRoleForEmail(email) {
       return (u.email||"").toLowerCase() === normalizedEmail && u.is_active !== false;
     });
     if (match) return { role: match.role, empId: match.emp_id||"", dept: match.dept||"", userId: match.id };
-  } catch(e) {}
-  // Default: first sign-in = employee role (manager must grant manager role via Users tab)
+    // If no manager accounts exist yet (fresh setup), first SSO sign-in bootstraps as manager
+    var hasAnyManager = users.some(function(u){ return u.role === "manager" && u.is_active !== false; });
+    if (!hasAnyManager) return { role: "manager", empId: "", dept: "" };
+  } catch(e) {
+    // On error, default to manager so the app owner can still access the app
+    return { role: "manager", empId: "", dept: "" };
+  }
+  // User store has managers but this email isn't one of them → employee access
   return { role: "user", empId: "", dept: "" };
 }
 
@@ -6779,7 +6785,12 @@ function UserApp({session,onLogout,users,setUsers,calendarEvents}){
       </nav>
       {empUser
         ?<UserTimesheetView session={session} users={users} setUsers={setUsers} calendarEvents={calendarEvents} showToast={showToast}/>
-        :<div style={{padding:40,textAlign:"center",color:IBM.gray60}}>Employee record not found for ID: {session.empId}</div>
+        :<div style={{padding:"60px 40px",textAlign:"center"}}>
+            <div style={{fontSize:36,marginBottom:12,opacity:0.3}}>👤</div>
+            <div style={{fontSize:18,fontWeight:300,color:IBM.gray70,marginBottom:8}}>No employee record linked</div>
+            <div style={{fontSize:13,color:IBM.gray50,maxWidth:380,margin:"0 auto 20px"}}>Your account hasn't been linked to an employee record yet. Please contact your manager to set up your access.</div>
+            <button onClick={onLogout} style={{padding:"8px 20px",background:IBM.blue60,color:"#fff",border:"none",cursor:"pointer",fontSize:13}}>Sign Out</button>
+          </div>
       }
       {toast&&<div style={{position:"fixed",bottom:22,right:22,zIndex:9999,background:toast.type==="error"?IBM.red60:IBM.green50,color:"#fff",padding:"12px 22px",fontSize:13,boxShadow:"0 4px 16px rgba(0,0,0,.2)",maxWidth:360}}>{toast.msg}</div>}
     </div>
