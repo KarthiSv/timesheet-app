@@ -1477,8 +1477,53 @@ function EmployeeDetailPanel({userId,users,monthLabel,periodLabel,onFixEntry,onS
     return t;
   },[monthData]);
 
-  const projectSummary=useMemo(()=>{const map={};((user&&user.history)||[]).forEach(r=>{const k=r.projectCode;if(!map[k])map[k]={code:r.projectCode,name:r.projectName,scheduled:0,entered:0,diff:0,periods:0,missPeriods:0};map[k].scheduled+=r.scheduled;map[k].entered+=r.entered;map[k].diff+=r.diff;map[k].periods++;if(r.diff>0)map[k].missPeriods++;});return Object.values(map);},[user]);
-  const timelineData=useMemo(()=>{const bp={};((user&&user.history)||[]).forEach(r=>{const k=r.periodLabel;if(!bp[k])bp[k]={period:k,scheduled:0,entered:0};bp[k].scheduled+=r.scheduled;bp[k].entered+=r.entered;});return Object.values(bp);},[user]);
+  const projectSummary=useMemo(()=>{
+    // Prefer history (legacy/manual records)
+    if(user&&user.history&&user.history.length>0){
+      const map={};
+      user.history.forEach(r=>{const k=r.projectCode;if(!map[k])map[k]={code:r.projectCode,name:r.projectName,scheduled:0,entered:0,diff:0,periods:0,missPeriods:0};map[k].scheduled+=r.scheduled;map[k].entered+=r.entered;map[k].diff+=r.diff;map[k].periods++;if(r.diff>0)map[k].missPeriods++;});
+      return Object.values(map);
+    }
+    // Fallback: build from weeklyBreakdown grouped by workitem (imported records)
+    if(user&&user.weeklyBreakdown&&user.weeklyBreakdown.length>0){
+      const map={};
+      user.weeklyBreakdown.forEach(function(w){
+        var k=w.workitem||(user.wbsId?"WBS: "+user.wbsId:"(no workitem)");
+        if(!map[k])map[k]={code:k,name:k,scheduled:0,entered:0,diff:0,periods:0,missPeriods:0};
+        map[k].entered+=w.total||0;
+        map[k].periods++;
+      });
+      // Distribute scheduled hours across workitems proportionally
+      var totalEntered=Object.values(map).reduce(function(s,p){return s+p.entered;},0);
+      var totalSched=user?(Number(user.scheduled)||0):0;
+      Object.values(map).forEach(function(p){
+        p.scheduled=totalEntered>0?Math.round((p.entered/totalEntered)*totalSched):0;
+        p.diff=p.scheduled-p.entered;
+        if(p.diff>0)p.missPeriods=p.periods;
+      });
+      return Object.values(map);
+    }
+    return [];
+  },[user]);
+  const timelineData=useMemo(()=>{
+    // Prefer history
+    if(user&&user.history&&user.history.length>0){
+      const bp={};
+      user.history.forEach(r=>{const k=r.periodLabel;if(!bp[k])bp[k]={period:k,scheduled:0,entered:0};bp[k].scheduled+=r.scheduled;bp[k].entered+=r.entered;});
+      return Object.values(bp);
+    }
+    // Fallback: weekly breakdown (imported records)
+    if(user&&user.weeklyBreakdown&&user.weeklyBreakdown.length>0){
+      var totalSched=user?(Number(user.scheduled)||0):0;
+      var wbArr=user.weeklyBreakdown.slice().reverse(); // oldest first for chart
+      var totalWbHrs=wbArr.reduce(function(s,w){return s+(w.total||0);},0);
+      return wbArr.map(function(w){
+        var proportionalSched=totalWbHrs>0?Math.round(((w.total||0)/totalWbHrs)*totalSched):0;
+        return {period:w.weekEnd||"?",scheduled:proportionalSched,entered:w.total||0};
+      });
+    }
+    return [];
+  },[user]);
 
   // NOW safe to return null after all hooks are called
   if(!user)return null;
