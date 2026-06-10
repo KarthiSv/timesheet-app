@@ -4129,7 +4129,12 @@ async function extractPageLines(page){
 
 async function parseInvoicePDF(file){
   var ab = await file.arrayBuffer();
-  var pdf = await pdfjsLib.getDocument({data: ab}).promise;
+  // standardFontDataUrl: some invoices use built-in Type1 fonts (Helvetica etc.)
+  // whose glyph data pdf.js must load — without it getTextContent rejects.
+  var pdf = await pdfjsLib.getDocument({
+    data: ab,
+    standardFontDataUrl: "/standard_fonts/",
+  }).promise;
 
   // Collect all lines preserving page structure.
   // A single corrupt page must not abort the whole document.
