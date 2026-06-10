@@ -404,7 +404,7 @@ function buildNotifTemplate(user,status,mL,pL){
       return "  "+(m.periodLabel||"").padEnd(20)+"| "+(m.projectCode||"").padEnd(15)+"| "+(m.scheduled+"h").padEnd(10)+"| "+(m.entered===0?"Not submitted":m.entered+"h").padEnd(9)+"| "+dSign+Math.abs(m.diff)+"h";
     }).join("\n");
     mmBlock=[div,"  VARIANCE DETAILS","  (– = under-entered  /  + = over-entered)",div,
-      "  Period              | Project        | Scheduled | Entered | Variance",
+      "  Period              | Project        | IBM Hrs   | Clarity | Variance",
       "  "+"-".repeat(64),rows,div,""].join("\n");
   }
 
@@ -415,10 +415,10 @@ function buildNotifTemplate(user,status,mL,pL){
     action="Your timesheet for "+actualPeriod+" has NOT been submitted. Please log in to the IBM timesheet system immediately and enter your hours.";
   } else if(varianceType==="over"){
     brief="Your timesheet for "+actualPeriod+" shows "+variance+"h MORE than your IBM-scheduled "+sch+"h. This over-entry may indicate incorrect or missing project allocation. Please verify and correct your Clarity entries.";
-    action="Review your time entries for "+actualPeriod+" and correct any hours that were logged against the wrong project or entered more than once. Scheduled: "+sch+"h — Entered: "+ent+"h — Excess: +"+variance+"h.";
+    action="Review your time entries for "+actualPeriod+" and correct any hours that were logged against the wrong project or entered more than once. IBM Hrs: "+sch+"h — Clarity Hrs: "+ent+"h — Excess: +"+variance+"h.";
   } else {
     brief="Your timesheet for "+actualPeriod+" shows "+absVar+"h FEWER than your IBM-scheduled "+sch+"h. Missing hours affect project cost tracking, resource utilization reports, and manager approvals.";
-    action="Submit your remaining "+absVar+"h for "+actualPeriod+" before the period closes. Scheduled: "+sch+"h — Entered: "+ent+"h — Shortfall: -"+absVar+"h.";
+    action="Submit your remaining "+absVar+"h for "+actualPeriod+" before the period closes. IBM Hrs: "+sch+"h — Clarity Hrs: "+ent+"h — Shortfall: -"+absVar+"h.";
   }
 
   var subject="[Timesheet Reminder] Action Required — "+user.name+" | "+actualPeriod+" | "+pL;
@@ -437,8 +437,8 @@ function buildNotifTemplate(user,status,mL,pL){
     "  WBS ID      : "+wbsStr,
     "  Severity    : "+sevLabel,
     div,
-    "  Scheduled   : "+sch+"h",
-    "  Entered     : "+entStr,
+    "  IBM Hrs     : "+sch+"h",
+    "  Clarity Hrs : "+entStr,
     "  Variance    : "+gapStr,
     div,
     "  Projects assigned:",
@@ -3101,7 +3101,7 @@ function ImportModal({onImport, onClose, odConnected, lfsHandle}) {
                   <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
                     <thead>
                       <tr style={{background:IBM.gray100,color:"#fff"}}>
-                        {["Name","WBS ID","Talent ID","Country","Scheduled","Actual","Variance","Status","Manager","Period(s)"].map(function(h){
+                        {["Name","WBS ID","Talent ID","Country","IBM Hrs","Clarity Hrs","Variance","Status","Manager","Period(s)"].map(function(h){
                           return <th key={h} style={{padding:"7px 10px",textAlign:"left",fontWeight:400,fontSize:10,textTransform:"uppercase",borderRight:"1px solid "+IBM.gray80,whiteSpace:"nowrap"}}>{h}</th>;
                         })}
                       </tr>
@@ -5475,7 +5475,8 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
   const[showAllMonths,setShowAllMonths]=useState(true); // default to All Months view
   const[showImport,setShowImport]=useState(false);
   const[filterStatus,setFilterStatus]=useState("all");
-  const[sortMode,setSortMode]=useState("severity-desc");
+  const[sortCol,setSortCol]=useState("severity");
+  const[sortDir,setSortDir]=useState("desc");
   const[search,setSearch]=useState("");
   const[notifications,setNotifications]=useState({});
   const[selected,setSelected]=useState([]);
@@ -5909,12 +5910,14 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
       }
       return true;
     });
-    if(sortMode==="severity-desc") l=l.slice().sort(function(a,b){return getSeverity(b)-getSeverity(a);});
-    else if(sortMode==="severity-asc") l=l.slice().sort(function(a,b){return getSeverity(a)-getSeverity(b);});
-    else if(sortMode==="name") l=l.slice().sort(function(a,b){return (a.name||"").localeCompare(b.name||"");});
-    else if(sortMode==="hours-gap") l=l.slice().sort(function(a,b){return (Number(b.scheduled)-Number(b.entered))-(Number(a.scheduled)-Number(a.entered));});
+    if(sortCol==="severity") l=l.slice().sort(function(a,b){return sortDir==="desc"?getSeverity(b)-getSeverity(a):getSeverity(a)-getSeverity(b);});
+    else if(sortCol==="name") l=l.slice().sort(function(a,b){return sortDir==="asc"?(a.name||"").localeCompare(b.name||""):(b.name||"").localeCompare(a.name||"");});
+    else if(sortCol==="ibm") l=l.slice().sort(function(a,b){return sortDir==="desc"?Number(b.scheduled)-Number(a.scheduled):Number(a.scheduled)-Number(b.scheduled);});
+    else if(sortCol==="clarity") l=l.slice().sort(function(a,b){return sortDir==="desc"?Number(b.entered)-Number(a.entered):Number(a.entered)-Number(b.entered);});
+    else if(sortCol==="variance") l=l.slice().sort(function(a,b){var va=Number(a.scheduled)-Number(a.entered),vb=Number(b.scheduled)-Number(b.entered);return sortDir==="desc"?vb-va:va-vb;});
+    else if(sortCol==="rm") l=l.slice().sort(function(a,b){return sortDir==="asc"?(a.resourceManager||"").localeCompare(b.resourceManager||""):(b.resourceManager||"").localeCompare(a.resourceManager||"");});
     return l;
-  },[users,filterStatus,filterSource,search,filterRM,filterWBS,sortMode,showAllMonths,selMonth,selYear]);
+  },[users,filterStatus,filterSource,search,filterRM,filterWBS,sortCol,sortDir,showAllMonths,selMonth,selYear]);
 
   // Invoice lookup: normalised name → aggregated invoice person record
   const invoiceLookup=useMemo(function(){
@@ -6283,7 +6286,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
                 {l:"Total People",v:total,c:IBM.blue60,onClick:function(){setActiveTab("records");setFilterStatus("all");setFilterSource("all");}},
                 {l:"Matched",v:matchedCount,c:IBM.green50,onClick:function(){setActiveTab("records");setFilterStatus("all");setFilterSource("Both");}},
                 {l:"IBM Scheduled",v:users.reduce(function(s,u){return s+(Number(u.scheduled)||0);},0)+"h",c:IBM.blue60},
-                {l:monthLabel2+" Actual",v:monthActual+"h",c:monthActual>0?IBM.purple60:IBM.gray50},
+                {l:monthLabel2+" Clarity",v:monthActual+"h",c:monthActual>0?IBM.purple60:IBM.gray50},
                 {l:"IBM Only",v:ibmOnlyCount,c:IBM.orange40,onClick:function(){setActiveTab("records");setFilterStatus("all");setFilterSource("IBM only");}},
                 {l:"Clarity Only",v:clarityOnlyCount,c:IBM.purple60,onClick:function(){setActiveTab("records");setFilterStatus("all");setFilterSource("Clarity only");}}
               ];
@@ -6379,8 +6382,6 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
                   var c=v==="IBM only"?IBM.blue60:v==="Clarity only"?IBM.purple60:IBM.gray70;
                   return <button key={v} onClick={function(){setFilterSource(v);}} style={{padding:"4px 10px",border:"1px solid "+(filterSource===v?c:IBM.gray20),background:filterSource===v?c:"#fff",color:filterSource===v?"#fff":IBM.gray70,cursor:"pointer",fontSize:11,fontWeight:600}}>{l}</button>;
                 })}
-                <span style={{width:1,height:16,background:IBM.gray20,flexShrink:0}}/>
-                <Sel value={sortMode} onChange={function(e){setSortMode(e.target.value);}} options={[{label:"Severity ↑",value:"severity-desc"},{label:"Severity ↓",value:"severity-asc"},{label:"Name A–Z",value:"name"},{label:"Hours Gap",value:"hours-gap"}]}/>
               </div>
               <div style={{display:"flex",gap:6,alignItems:"center"}}>
                 {(function(){
@@ -6463,7 +6464,26 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
           })()}
           <div className="records-table-wrap" style={{overflowX:"auto",margin:"0 28px"}}>
             <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-              <thead><tr>{["","","Name","Source","WBS / Talent ID","Dept / Country","Resource Mgr","Workitems","Scheduled","Actual Hrs","Variance","Status","Billing Code","💰 Bill Rate","📄 Invoice Hrs","Actions"].map(function(h){ return <th key={h} className={(h==="Billing Code"||h==="Workitems"||h==="💰 Bill Rate"||h==="📄 Invoice Hrs")?"col-hide-mobile":""} style={TH}>{h}</th>; })}</tr></thead>
+              <thead><tr>{(function(){
+                function handleSort(col){if(sortCol===col){setSortDir(function(d){return d==="asc"?"desc":"asc";});}else{setSortCol(col);setSortDir(col==="name"||col==="rm"?"asc":"desc");}}
+                var cols=[
+                  {h:"",col:null},{h:"",col:null},
+                  {h:"Name",col:"name"},{h:"Source",col:null},
+                  {h:"WBS / Talent ID",col:null},{h:"Dept / Country",col:null},
+                  {h:"Resource Mgr",col:"rm"},
+                  {h:"Workitems",col:null},
+                  {h:"IBM Hrs",col:"ibm"},{h:"Clarity Hrs",col:"clarity"},
+                  {h:"Variance",col:"variance"},{h:"Status",col:"severity"},
+                  {h:"Billing Code",col:null},{h:"💰 Bill Rate",col:null},{h:"📄 Invoice Hrs",col:null},{h:"Actions",col:null}
+                ];
+                return cols.map(function(item){
+                  var sortable=item.col!==null;
+                  var active=sortCol===item.col;
+                  var arrow=active?(sortDir==="asc"?" ↑":" ↓"):(sortable?" ↕":"");
+                  var hide=(item.h==="Billing Code"||item.h==="Workitems"||item.h==="💰 Bill Rate"||item.h==="📄 Invoice Hrs")?"col-hide-mobile":"";
+                  return <th key={item.h} className={hide} onClick={sortable?function(){handleSort(item.col);}:undefined} style={Object.assign({},TH,{cursor:sortable?"pointer":"default",userSelect:"none",background:active?"#1d3461":TH.background,whiteSpace:"nowrap"})}>{item.h}{sortable&&<span style={{opacity:active?1:0.4,fontSize:9,marginLeft:2}}>{arrow}</span>}</th>;
+                });
+              })()}</tr></thead>
               <tbody>
                 {filtered.map((u,idx)=>{
                   const alt=idx%2,st=getStatus(u),diff=Number(u.scheduled)-Number(u.entered),absDiff=Math.abs(diff);
