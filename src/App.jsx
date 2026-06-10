@@ -5916,6 +5916,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
     else if(sortCol==="clarity") l=l.slice().sort(function(a,b){return sortDir==="desc"?Number(b.entered)-Number(a.entered):Number(a.entered)-Number(b.entered);});
     else if(sortCol==="variance") l=l.slice().sort(function(a,b){var va=Number(a.scheduled)-Number(a.entered),vb=Number(b.scheduled)-Number(b.entered);return sortDir==="desc"?vb-va:va-vb;});
     else if(sortCol==="rm") l=l.slice().sort(function(a,b){return sortDir==="asc"?(a.resourceManager||"").localeCompare(b.resourceManager||""):(b.resourceManager||"").localeCompare(a.resourceManager||"");});
+    else if(sortCol==="dept") l=l.slice().sort(function(a,b){return sortDir==="asc"?(a.dept||"").localeCompare(b.dept||""):(b.dept||"").localeCompare(a.dept||"");});
     return l;
   },[users,filterStatus,filterSource,search,filterRM,filterWBS,sortCol,sortDir,showAllMonths,selMonth,selYear]);
 
@@ -6469,7 +6470,7 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
                 var cols=[
                   {h:"",col:null},{h:"",col:null},
                   {h:"Name",col:"name"},{h:"Source",col:null},
-                  {h:"WBS / Talent ID",col:null},{h:"Dept / Country",col:null},
+                  {h:"WBS / Talent ID",col:null},{h:"Dept / Country",col:"dept"},
                   {h:"Resource Mgr",col:"rm"},
                   {h:"Workitems",col:null},
                   {h:"IBM Hrs",col:"ibm"},{h:"Clarity Hrs",col:"clarity"},
