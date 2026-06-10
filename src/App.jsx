@@ -4216,12 +4216,33 @@ function normInvName(s){
     .split(/\s+/).sort().join(" ");
 }
 
+// ─── GENERIC TABLE SORT HELPERS ───────────────────────────────────────────────
+// Compares two cell values for sorting: numbers numerically, strings with
+// natural ordering; empty values always sink to the bottom regardless of dir.
+function cmpSortVals(a,b,dir){
+  var an=(a===null||a===undefined||a===""),bn=(b===null||b===undefined||b==="");
+  if(an&&bn)return 0; if(an)return 1; if(bn)return -1;
+  var r=(typeof a==="number"&&typeof b==="number")?(a-b):String(a).localeCompare(String(b),undefined,{numeric:true,sensitivity:"base"});
+  return dir==="asc"?r:-r;
+}
+function SortableTH({label,col,sortCol,sortDir,onSort,thStyle}){
+  if(!col) return <th style={thStyle}>{label}</th>;
+  var active=sortCol===col;
+  return (
+    <th onClick={function(){onSort(col);}}
+      style={Object.assign({},thStyle,{cursor:"pointer",userSelect:"none",background:active?"#d0e2ff":thStyle.background})}>
+      {label}<span style={{opacity:active?1:0.35,fontSize:9,marginLeft:3}}>{active?(sortDir==="asc"?"↑":"↓"):"↕"}</span>
+    </th>
+  );
+}
+
 function InvoiceTab({users, billRateDB, invoices, setInvoices, showToast}){
   var [loading,     setLoading]     = useState(false);
   var [dragOver,    setDragOver]    = useState(false);
   var [selInvoice,  setSelInvoice]  = useState(null); // invoiceNo filter
   var [filterName,  setFilterName]  = useState("");
   var [valFilter,   setValFilter]   = useState("all"); // all|match|mismatch|missing
+  var [invSort,     setInvSort]     = useState({col:null,dir:"asc"});
 
   // Flatten all invoice people across loaded invoices (optionally filtered by selected invoice)
   var allPeople = useMemo(function(){
@@ -4272,9 +4293,27 @@ function InvoiceTab({users, billRateDB, invoices, setInvoices, showToast}){
   },[validated]);
 
   var displayed = useMemo(function(){
-    if(valFilter==="all") return validated;
-    return validated.filter(function(v){ return v.overallStatus===valFilter; });
-  },[validated,valFilter]);
+    var l = valFilter==="all" ? validated : validated.filter(function(v){ return v.overallStatus===valFilter; });
+    if(!invSort.col) return l;
+    var get={
+      name:function(v){return v.name;},
+      wbs:function(v){return v.wbsId;},
+      invno:function(v){return v.invoiceNo;},
+      invhrs:function(v){return v.totalHours;},
+      rate:function(v){return v.rate;},
+      clarity:function(v){return v.clarityHrs;},
+      ibm:function(v){return v.ibmSched;},
+      variance:function(v){return v.hoursDiff;},
+      ratestatus:function(v){return v.rateStatus;},
+      overall:function(v){return v.overallStatus;}
+    }[invSort.col];
+    if(!get) return l;
+    return l.slice().sort(function(a,b){return cmpSortVals(get(a),get(b),invSort.dir);});
+  },[validated,valFilter,invSort]);
+
+  function handleInvSort(col){
+    setInvSort(function(p){ return p.col===col?{col:col,dir:p.dir==="asc"?"desc":"asc"}:{col:col,dir:"asc"}; });
+  }
 
   async function handleFiles(files){
     var pdfs = Array.from(files).filter(function(f){ return f.name.toLowerCase().endsWith(".pdf"); });
@@ -4399,8 +4438,12 @@ function InvoiceTab({users, billRateDB, invoices, setInvoices, showToast}){
           <div style={{overflowX:"auto"}}>
             <table style={{width:"100%",borderCollapse:"collapse"}}>
               <thead><tr>
-                {["Name","WBS","Invoice #","Invoice Hrs","Invoice Rate","Clarity Hrs","IBM Sched","Hrs Variance","Rate Status","Overall"].map(function(h){
-                  return <th key={h} style={TH2}>{h}</th>;
+                {[
+                  {h:"Name",c:"name"},{h:"WBS",c:"wbs"},{h:"Invoice #",c:"invno"},
+                  {h:"Invoice Hrs",c:"invhrs"},{h:"Invoice Rate",c:"rate"},{h:"Clarity Hrs",c:"clarity"},
+                  {h:"IBM Sched",c:"ibm"},{h:"Hrs Variance",c:"variance"},{h:"Rate Status",c:"ratestatus"},{h:"Overall",c:"overall"}
+                ].map(function(item){
+                  return <SortableTH key={item.h} label={item.h} col={item.c} sortCol={invSort.col} sortDir={invSort.dir} onSort={handleInvSort} thStyle={TH2}/>;
                 })}
               </tr></thead>
               <tbody>
@@ -4926,14 +4969,29 @@ function BillRateTab({users, billRateDB, setBillRateDB, expectedBillRateDB, setE
   var [dragOver,          setDragOver]          = useState(false);
   var [dragOverExp,       setDragOverExp]       = useState(false);
   var [valTab,            setValTab]            = useState("all"); // all|mismatch|unknown|match
+  var [refSort,           setRefSort]           = useState({col:null,dir:"asc"});
+  var [valSort,           setValSort]           = useState({col:null,dir:"asc"});
 
   var filteredDB = useMemo(function(){
     var q = filterCode.toLowerCase(), w = filterWbs.toLowerCase();
-    return billRateDB.filter(function(r){
+    var l = billRateDB.filter(function(r){
       return (!q || String(r.billingCode).toLowerCase().includes(q))
           && (!w || String(r.wbsId).toLowerCase().includes(w));
     });
-  },[billRateDB, filterCode, filterWbs]);
+    if(!refSort.col) return l;
+    return l.slice().sort(function(a,b){
+      var av=a[refSort.col], bv=b[refSort.col];
+      if(refSort.col==="billingRate"){ av=Number(av)||0; bv=Number(bv)||0; }
+      return cmpSortVals(av,bv,refSort.dir);
+    });
+  },[billRateDB, filterCode, filterWbs, refSort]);
+
+  function handleRefSort(col){
+    setRefSort(function(p){ return p.col===col?{col:col,dir:p.dir==="asc"?"desc":"asc"}:{col:col,dir:"asc"}; });
+  }
+  function handleValSort(col){
+    setValSort(function(p){ return p.col===col?{col:col,dir:p.dir==="asc"?"desc":"asc"}:{col:col,dir:"asc"}; });
+  }
 
   // Build validation results for all IBM users (include expected lookup)
   var valResults = useMemo(function(){
@@ -4956,12 +5014,25 @@ function BillRateTab({users, billRateDB, setBillRateDB, expectedBillRateDB, setE
   },[valResults]);
 
   var filteredVal = useMemo(function(){
-    if(valTab==="all") return valResults;
-    if(valTab==="mismatch") return valResults.filter(function(u){ return u._val.status==="mismatch"; });
-    if(valTab==="unknown") return valResults.filter(function(u){ return u._val.status==="unknown"||u._val.status==="no_code"||u._val.status==="no_rate"; });
-    if(valTab==="match") return valResults.filter(function(u){ return u._val.status==="match"; });
-    return valResults;
-  },[valResults, valTab]);
+    var l = valResults;
+    if(valTab==="mismatch") l = valResults.filter(function(u){ return u._val.status==="mismatch"; });
+    else if(valTab==="unknown") l = valResults.filter(function(u){ return u._val.status==="unknown"||u._val.status==="no_code"||u._val.status==="no_rate"; });
+    else if(valTab==="match") l = valResults.filter(function(u){ return u._val.status==="match"; });
+    if(!valSort.col) return l;
+    var get={
+      name:function(u){return u.name;},
+      wbsId:function(u){return u.wbsId;},
+      hireType:function(u){return u.hireType;},
+      resourceType:function(u){return u.resourceType;},
+      billingCode:function(u){return u.billingCode;},
+      ibmRate:function(u){return Number(u.billingRate)||null;},
+      srcRate:function(u){var r=(u._srcRefs||[])[0];return r?Number(r.billingRate):null;},
+      expRate:function(u){var r=(u._expRefs||[])[0];return r?Number(r.billingRate):null;},
+      status:function(u){return u._val.status;}
+    }[valSort.col];
+    if(!get) return l;
+    return l.slice().sort(function(a,b){return cmpSortVals(get(a),get(b),valSort.dir);});
+  },[valResults, valTab, valSort]);
 
   function handleFileDrop(files){
     var arr = Array.from(files).filter(function(f){ return f.name.endsWith(".xlsx")||f.name.endsWith(".xls"); });
@@ -5198,8 +5269,12 @@ function BillRateTab({users, billRateDB, setBillRateDB, expectedBillRateDB, setE
           <div style={{overflowX:"auto"}}>
             <table style={{width:"100%",borderCollapse:"collapse"}}>
               <thead><tr>
-                {["WBS ID","Bill Code","Bill Rate ($/hr)","Hire Type","Resource Type","Country","Source","Actions"].map(function(h){
-                  return <th key={h} style={TH2}>{h}</th>;
+                {[
+                  {h:"WBS ID",c:"wbsId"},{h:"Bill Code",c:"billingCode"},{h:"Bill Rate ($/hr)",c:"billingRate"},
+                  {h:"Hire Type",c:"hireType"},{h:"Resource Type",c:"resourceType"},{h:"Country",c:"country"},
+                  {h:"Source",c:"source"},{h:"Actions",c:null}
+                ].map(function(item){
+                  return <SortableTH key={item.h} label={item.h} col={item.c} sortCol={refSort.col} sortDir={refSort.dir} onSort={handleRefSort} thStyle={TH2}/>;
                 })}
               </tr></thead>
               <tbody>
@@ -5268,8 +5343,12 @@ function BillRateTab({users, billRateDB, setBillRateDB, expectedBillRateDB, setE
             <div style={{overflowX:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse"}}>
                 <thead><tr>
-                  {["Name","WBS ID","Hire Type","Resource Type","Billing Code","IBM Rate","Source Rate(s)","Expected Rate(s)","Status"].map(function(h){
-                    return <th key={h} style={TH2}>{h}</th>;
+                  {[
+                    {h:"Name",c:"name"},{h:"WBS ID",c:"wbsId"},{h:"Hire Type",c:"hireType"},
+                    {h:"Resource Type",c:"resourceType"},{h:"Billing Code",c:"billingCode"},{h:"IBM Rate",c:"ibmRate"},
+                    {h:"Source Rate(s)",c:"srcRate"},{h:"Expected Rate(s)",c:"expRate"},{h:"Status",c:"status"}
+                  ].map(function(item){
+                    return <SortableTH key={item.h} label={item.h} col={item.c} sortCol={valSort.col} sortDir={valSort.dir} onSort={handleValSort} thStyle={TH2}/>;
                   })}
                 </tr></thead>
                 <tbody>
@@ -5849,6 +5928,48 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
   const deptMap={};users.forEach(u=>{if(!deptMap[u.dept])deptMap[u.dept]={dept:u.dept,complete:0,mismatch:0,missing:0,noibm:0,scheduled:0,actual:0};const st=getStatus(u);deptMap[u.dept][st==="green"?"complete":st==="yellow"?"mismatch":st==="purple"?"noibm":"missing"]++;deptMap[u.dept].scheduled+=Number(u.scheduled)||0;var _amkDept=selMonth+"-"+selYear; deptMap[u.dept].actual+=showAllMonths?Number(u.entered)||0:((u.monthlyHours||{})[_amkDept]||Number(u.entered)||0);});
   const barData=Object.values(deptMap);
   const sevDist=useMemo(()=>{const d={0:0,1:0,2:0,3:0,4:0};users.forEach(u=>d[getSeverity(u)]++);return[0,1,2,3,4].map(k=>({label:SEV[k].label,value:d[k],color:k===0?IBM.green50:k===1?"#0e6027":k===2?"#8e6a00":k===3?IBM.orange40:IBM.red60}));},[users]);
+  // Invoice lookup: normalised name → aggregated invoice person record
+  const invoiceLookup=useMemo(function(){
+    var map={};
+    invoices.forEach(function(inv){
+      inv.people.forEach(function(p){
+        var key=normInvName(p.name);
+        if(!map[key]) map[key]={totalHours:0,rate:p.rate,invoiceNo:p.invoiceNo||inv.invoiceNo,wbsId:p.wbsId||inv.wbsId,weeks:[]};
+        map[key].totalHours=Math.round((map[key].totalHours+p.totalHours)*100)/100;
+        (p.weeks||[]).forEach(function(w){map[key].weeks.push(w);});
+      });
+    });
+    return map;
+  },[invoices]);
+
+  // Bill rate lookup for Records tab: given a user, return {status,refRate}
+  function recBillRateStatus(u){
+    if(!billRateDB.length) return null;
+    var refs=billRateDB.filter(function(r){ return r.wbsId && u.wbsId && r.wbsId===u.wbsId; });
+    if(!refs.length) return {status:"no_ref"};
+    var userRate=Number(u.billingRate||0);
+    if(!userRate) return {status:"no_rate",refRate:refs[0].billingRate};
+    var hit=refs.find(function(r){ return Math.abs(Number(r.billingRate)-userRate)<0.01; });
+    return {status:hit?"match":"mismatch",refRate:refs[0].billingRate,userRate};
+  }
+
+  // Invoice status for a user in the records row
+  function recInvStatus(u){
+    if(!invoices.length) return null;
+    var key=normInvName(u.name);
+    var inv=invoiceLookup[key];
+    if(!inv){
+      // try clarityName
+      var k2=normInvName(u.clarityName||"");
+      inv=k2?invoiceLookup[k2]:null;
+    }
+    if(!inv) return {status:"not_found"};
+    var clarityHrs=Number(u.entered)||0;
+    var diff=Math.round((inv.totalHours-clarityHrs)*100)/100;
+    var status=Math.abs(diff)<0.1?"match":diff>0?"over":"under";
+    return {status,invHrs:inv.totalHours,clarityHrs,diff};
+  }
+
   const filtered=useMemo(function(){
     var q=search.toLowerCase();
     var qrm=filterRM.toLowerCase();
@@ -5917,50 +6038,26 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
     else if(sortCol==="variance") l=l.slice().sort(function(a,b){var va=Number(a.scheduled)-Number(a.entered),vb=Number(b.scheduled)-Number(b.entered);return sortDir==="desc"?vb-va:va-vb;});
     else if(sortCol==="rm") l=l.slice().sort(function(a,b){return sortDir==="asc"?(a.resourceManager||"").localeCompare(b.resourceManager||""):(b.resourceManager||"").localeCompare(a.resourceManager||"");});
     else if(sortCol==="dept") l=l.slice().sort(function(a,b){return sortDir==="asc"?(a.dept||"").localeCompare(b.dept||""):(b.dept||"").localeCompare(a.dept||"");});
-    return l;
-  },[users,filterStatus,filterSource,search,filterRM,filterWBS,sortCol,sortDir,showAllMonths,selMonth,selYear]);
-
-  // Invoice lookup: normalised name → aggregated invoice person record
-  const invoiceLookup=useMemo(function(){
-    var map={};
-    invoices.forEach(function(inv){
-      inv.people.forEach(function(p){
-        var key=normInvName(p.name);
-        if(!map[key]) map[key]={totalHours:0,rate:p.rate,invoiceNo:p.invoiceNo||inv.invoiceNo,wbsId:p.wbsId||inv.wbsId,weeks:[]};
-        map[key].totalHours=Math.round((map[key].totalHours+p.totalHours)*100)/100;
-        (p.weeks||[]).forEach(function(w){map[key].weeks.push(w);});
-      });
+    else if(sortCol==="source") l=l.slice().sort(function(a,b){return cmpSortVals(a.dataSource,b.dataSource,sortDir);});
+    else if(sortCol==="wbs") l=l.slice().sort(function(a,b){return cmpSortVals(a.wbsId||a.talentId,b.wbsId||b.talentId,sortDir);});
+    else if(sortCol==="workitems") l=l.slice().sort(function(a,b){
+      var an=(a.projects&&a.projects[0]&&a.projects[0].name)||"",bn=(b.projects&&b.projects[0]&&b.projects[0].name)||"";
+      return cmpSortVals(an,bn,sortDir);
     });
-    return map;
-  },[invoices]);
-
-  // Bill rate lookup for Records tab: given a user, return {status,refRate}
-  function recBillRateStatus(u){
-    if(!billRateDB.length) return null;
-    var refs=billRateDB.filter(function(r){ return r.wbsId && u.wbsId && r.wbsId===u.wbsId; });
-    if(!refs.length) return {status:"no_ref"};
-    var userRate=Number(u.billingRate||0);
-    if(!userRate) return {status:"no_rate",refRate:refs[0].billingRate};
-    var hit=refs.find(function(r){ return Math.abs(Number(r.billingRate)-userRate)<0.01; });
-    return {status:hit?"match":"mismatch",refRate:refs[0].billingRate,userRate};
-  }
-
-  // Invoice status for a user in the records row
-  function recInvStatus(u){
-    if(!invoices.length) return null;
-    var key=normInvName(u.name);
-    var inv=invoiceLookup[key];
-    if(!inv){
-      // try clarityName
-      var k2=normInvName(u.clarityName||"");
-      inv=k2?invoiceLookup[k2]:null;
-    }
-    if(!inv) return {status:"not_found"};
-    var clarityHrs=Number(u.entered)||0;
-    var diff=Math.round((inv.totalHours-clarityHrs)*100)/100;
-    var status=Math.abs(diff)<0.1?"match":diff>0?"over":"under";
-    return {status,invHrs:inv.totalHours,clarityHrs,diff};
-  }
+    else if(sortCol==="billing") l=l.slice().sort(function(a,b){return cmpSortVals(a.billingCode,b.billingCode,sortDir);});
+    else if(sortCol==="billrate") l=l.slice().sort(function(a,b){
+      // Rank by validation outcome so problems surface first on descending sort
+      function rank(u){var s=recBillRateStatus(u);if(!s)return 0;return s.status==="mismatch"?4:s.status==="no_rate"?3:s.status==="match"?2:1;}
+      var ra=rank(a),rb=rank(b);
+      return sortDir==="desc"?rb-ra:ra-rb;
+    });
+    else if(sortCol==="inv") l=l.slice().sort(function(a,b){
+      function hrs(u){var s=recInvStatus(u);return s&&s.invHrs!==undefined?s.invHrs:-1;}
+      var ha=hrs(a),hb=hrs(b);
+      return sortDir==="desc"?hb-ha:ha-hb;
+    });
+    return l;
+  },[users,filterStatus,filterSource,search,filterRM,filterWBS,sortCol,sortDir,showAllMonths,selMonth,selYear,billRateDB,invoiceLookup,invoices]);
 
   const handleGenNotif=u=>{if(getStatus(u)==="green")return;setNotifications(p=>({...p,[u.id]:genNotifForUser(u,monthLabel,periodLabel)}));showToast(`✓ Ready for ${u.name}`);};
   const handleSendEmail=u=>{
@@ -6466,16 +6563,16 @@ function ManagerApp({session,onLogout,users,setUsers,calendarEvents,setCalendarE
           <div className="records-table-wrap" style={{overflowX:"auto",margin:"0 28px"}}>
             <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
               <thead><tr>{(function(){
-                function handleSort(col){if(sortCol===col){setSortDir(function(d){return d==="asc"?"desc":"asc";});}else{setSortCol(col);setSortDir(col==="name"||col==="rm"?"asc":"desc");}}
+                function handleSort(col){if(sortCol===col){setSortDir(function(d){return d==="asc"?"desc":"asc";});}else{setSortCol(col);setSortDir(["name","rm","source","wbs","dept","workitems","billing"].includes(col)?"asc":"desc");}}
                 var cols=[
                   {h:"",col:null},{h:"",col:null},
-                  {h:"Name",col:"name"},{h:"Source",col:null},
-                  {h:"WBS / Talent ID",col:null},{h:"Dept / Country",col:"dept"},
+                  {h:"Name",col:"name"},{h:"Source",col:"source"},
+                  {h:"WBS / Talent ID",col:"wbs"},{h:"Dept / Country",col:"dept"},
                   {h:"Resource Mgr",col:"rm"},
-                  {h:"Workitems",col:null},
+                  {h:"Workitems",col:"workitems"},
                   {h:"IBM Hrs",col:"ibm"},{h:"Clarity Hrs",col:"clarity"},
                   {h:"Variance",col:"variance"},{h:"Status",col:"severity"},
-                  {h:"Billing Code",col:null},{h:"💰 Bill Rate",col:null},{h:"📄 Invoice Hrs",col:null},{h:"Actions",col:null}
+                  {h:"Billing Code",col:"billing"},{h:"💰 Bill Rate",col:"billrate"},{h:"📄 Invoice Hrs",col:"inv"},{h:"Actions",col:null}
                 ];
                 return cols.map(function(item){
                   var sortable=item.col!==null;
