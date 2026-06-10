@@ -4113,7 +4113,8 @@ async function extractPageLines(page){
   var tc = await page.getTextContent();
   var byY = {};
   tc.items.forEach(function(item){
-    if(!item.str.trim()) return;
+    // Marked-content items have no str/transform — skip anything malformed
+    if(typeof item.str!=="string" || !item.str.trim() || !item.transform) return;
     var y = Math.round(item.transform[5] / 2) * 2; // bucket to 2pt
     if(!byY[y]) byY[y] = [];
     byY[y].push({x: item.transform[4], str: item.str});
@@ -4130,12 +4131,17 @@ async function parseInvoicePDF(file){
   var ab = await file.arrayBuffer();
   var pdf = await pdfjsLib.getDocument({data: ab}).promise;
 
-  // Collect all lines preserving page structure
+  // Collect all lines preserving page structure.
+  // A single corrupt page must not abort the whole document.
   var allLines = [];
   for(var i=1; i<=pdf.numPages; i++){
-    var page = await pdf.getPage(i);
-    var lines = await extractPageLines(page);
-    allLines = allLines.concat(lines);
+    try{
+      var page = await pdf.getPage(i);
+      var lines = await extractPageLines(page);
+      allLines = allLines.concat(lines);
+    } catch(pageErr){
+      console.warn("[Invoice] "+file.name+" — skipping page "+i+":", pageErr);
+    }
   }
   var fullText = allLines.join(" "); // for metadata regexes
 
@@ -4319,8 +4325,18 @@ function InvoiceTab({users, billRateDB, invoices, setInvoices, showToast}){
     var pdfs = Array.from(files).filter(function(f){ return f.name.toLowerCase().endsWith(".pdf"); });
     if(!pdfs.length){ showToast("Please upload PDF invoice files","error"); return; }
     setLoading(true);
-    try{
-      var results = await Promise.all(pdfs.map(parseInvoicePDF));
+    // Parse each file independently — one bad PDF must not block the others
+    var settled = await Promise.all(pdfs.map(function(f){
+      return parseInvoicePDF(f)
+        .then(function(r){ return {ok:true, inv:r}; })
+        .catch(function(e){
+          console.error("[Invoice] Failed to parse "+f.name+":", e);
+          return {ok:false, name:f.name, err:e};
+        });
+    }));
+    var results = settled.filter(function(s){ return s.ok; }).map(function(s){ return s.inv; });
+    var failed  = settled.filter(function(s){ return !s.ok; });
+    if(results.length){
       setInvoices(function(prev){
         var next = prev.slice();
         results.forEach(function(inv){
@@ -4333,12 +4349,15 @@ function InvoiceTab({users, billRateDB, invoices, setInvoices, showToast}){
       // Debug: log extracted lines so format issues can be diagnosed
       results.forEach(function(r){ console.log("[Invoice]",r.fileName,"lines:",r._lines); });
       if(total===0){
-        showToast("⚠ "+pdfs.length+" PDF(s) loaded but 0 people found — check console for raw lines","warn");
+        showToast("⚠ "+results.length+" PDF(s) loaded but 0 people found — check console for raw lines","warn");
       } else {
-        showToast("✓ Loaded "+pdfs.length+" invoice(s) — "+total+" people parsed");
+        showToast("✓ Loaded "+results.length+" invoice(s) — "+total+" people parsed");
       }
-    } catch(err){
-      showToast("Error parsing PDF: "+err.message,"error");
+    }
+    if(failed.length){
+      var firstErr = failed[0].err;
+      var detail = firstErr ? (firstErr.message || String(firstErr)) : "unknown error";
+      showToast("⚠ Could not parse "+failed.map(function(f){ return f.name; }).join(", ")+" — "+detail+" (see console)","error");
     }
     setLoading(false);
   }
